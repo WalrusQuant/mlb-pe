@@ -69,7 +69,6 @@ James created this formula to quantify how well a team's run differential predic
 
 ## Acknowledgments
 
-- Built with [R Shiny](https://shiny.rstudio.com/)  
 - MLB data sourced using the [baseballr]([https://hoopr.sportsdataverse.org/](https://billpetti.github.io/baseballr/)) package  
 
 
