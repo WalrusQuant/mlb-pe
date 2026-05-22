@@ -1,79 +1,57 @@
-# MLB Pythagorean Expectation model
+# MLB Pythagorean Expectation
 
-This project predicts MLB game outcomes for the 2025 season using the Pythagorean Expectation model. It calculates win probabilities, predicted runs for home and away teams, and total runs for games scheduled on a given day. The model leverages team run differentials from the baseballr package and outputs predictions in a formatted table and CSV file.
+A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill James' Pythagorean Expectation, and teaches you how the math works.
 
----
+> Originally written in R. This repo contains both the original R scripts (in [`legacy/`](./legacy)) and the new Tauri rewrite.
 
-## Pythagorean Expectation
+## What it does
 
-The Pythagorean Expectation, developed by sabermetrician Bill James, estimates a baseball team's expected win percentage based on runs scored and allowed. The formula is:
+- **Predictions** for today's games (or any date), showing win probabilities, fair American odds, and predicted runs.
+- **Learn** page walking through the model — the formulas, why it works, and what it ignores.
+- **Playground** with a draggable exponent slider and editable team stats so you can feel how the math responds.
+- Data is pulled directly from the public [MLB Stats API](https://statsapi.mlb.com), cached locally for 10 minutes.
 
-Win Percentage = (Runs Scored^2) / (Runs Scored^2 + Runs Allowed^2)
+## The model in one paragraph
 
-James created this formula to quantify how well a team's run differential predicts its win-loss record. In baseball, scoring more runs while allowing fewer is a strong indicator of success. The formula, inspired by the Pythagorean theorem due to its use of squared terms, captures this relationship effectively. It is widely used in baseball analytics because it provides a simple yet powerful way to estimate team performance and predict game outcomes based on offensive and defensive efficiency relative to league averages.
+Each team's standalone strength is its *Pythagorean win %* — `RS^x / (RS^x + RA^x)`, where the exponent `x` is fit to the current season's results (typically near 1.83). Two teams are combined into a matchup probability via *log5*. Predicted runs use offensive and defensive strength relative to the league average. A full walkthrough is built into the app's Learn tab.
 
+## Running it
 
+Prereqs: a recent Rust toolchain, Node 20+, and pnpm.
 
----
+```bash
+pnpm install
+pnpm tauri dev          # launch the dev app
+pnpm tauri build        # produce a distributable bundle (.dmg / .app / .msi / .deb depending on platform)
+```
 
-## Features
+The app fetches the current season's schedule on first load — give it a few seconds.
 
-- Fetches 2025 MLB schedule and game data using baseballr.
-  
-- Computes team statistics (runs scored, allowed, games played).
+## How it's wired
 
-- Applies Pythagorean Expectation to estimate win probabilities.
+```
+src-tauri/src/
+├── mlb_api.rs     # statsapi.mlb.com client (replaces the R `baseballr` calls)
+├── model.rs       # Pythagorean, log5, OS/DS, golden-section exponent fitter
+└── lib.rs         # Tauri commands + in-memory cache
 
-- Uses offensive and defensive strengths to predict runs.
-
-- Converts probabilities to American betting odds to show fair odds. 
-
-- Outputs predictions in a formatted table and CSV file (mlb_predictions.csv).
-
-
-
----
-
-## Installation Guide
-
-1. **Install R and RStudio** *(if not installed)*:  
-   - [Download R](https://cran.r-project.org/)  
-   - [Download RStudio](https://www.rstudio.com/products/rstudio/download/)
-
-2. **Download the Project Files**:  
-   - Clone or download this repository to your local machine.
-
-3. **Install Required Packages**:  
-   ```markdown
-   install.packages(c("tidyverse", "baseballr", "lubridate", "knitr"))
-
-
----
-
-## Usage
-
-
-1. Open the R script (mlb_predictor.R) in an R environment (e.g., RStudio).
-
-2. Run the script to generate predictions for today's games: 
-   ```markdown
-   source("mlb_predictor.R")
-
-3. View the formatted table in the console and check mlb_predictions.csv for results.
-
-4. To predict games for a future date (e.g., tomorrow), modify the today variable:
-
-
-
----
+src/
+├── routes/
+│   ├── +page.svelte           # Predictions
+│   ├── learn/+page.svelte     # Educational walkthrough
+│   └── playground/+page.svelte# Interactive sliders + sensitivity chart
+└── lib/
+    ├── api.ts                 # invoke() wrappers
+    ├── types.ts               # TS types mirroring Rust structs
+    └── format.ts              # Odds, percentages, CSV export
+```
 
 ## Acknowledgments
 
-- MLB data sourced using the [baseballr]([https://hoopr.sportsdataverse.org/](https://billpetti.github.io/baseballr/)) package  
+- **Bill James** for the original Pythagorean Expectation and log5 formulations.
+- **[MLB Stats API](https://statsapi.mlb.com)** — public, no auth required, replaces what the R `baseballr` package wraps.
+- The original R implementation lives in [`legacy/`](./legacy) for reference.
 
+## License
 
-
-
-
-
-
+MIT — see [LICENSE](./LICENSE).
