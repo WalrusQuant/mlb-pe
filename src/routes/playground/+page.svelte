@@ -22,6 +22,11 @@
   let awayG = $state(99);
   let exponent = $state(1.83);
 
+  // Sort state for left team table
+  type SortKey = "rank" | "team" | "wpct" | "rpg" | "rapg" | "os" | "ds";
+  let sortKey = $state<SortKey>("rank");
+  let sortDir = $state<"asc" | "desc">("asc");
+
   // Local math — mirrored from src-tauri/src/model.rs so slider interaction stays snappy.
   function pythag(rs: number, ra: number, x: number): number {
     if (rs <= 0 && ra <= 0) return 0.5;
@@ -40,7 +45,6 @@
       : Math.round(((1 - p) * 100) / p);
   }
 
-  // Derived predictions update instantly when any input changes.
   let result = $derived.by(() => {
     const pHome = pythag(homeRS, homeRA, exponent);
     const pAway = pythag(awayRS, awayRA, exponent);
@@ -53,23 +57,14 @@
     const eHome = osH * dsA * leagueAvgRuns;
     const eAway = osA * dsH * leagueAvgRuns;
     return {
-      pHome,
-      pAway,
-      homeWin,
-      awayWin,
+      pHome, pAway, homeWin, awayWin,
       homeFairOdds: americanOdds(homeWin),
       awayFairOdds: americanOdds(awayWin),
-      eHome,
-      eAway,
-      total: eHome + eAway,
-      osH,
-      dsH,
-      osA,
-      dsA,
+      eHome, eAway, total: eHome + eAway,
+      osH, dsH, osA, dsA,
     };
   });
 
-  // Sensitivity chart: home log5 win prob vs exponent across [0.5, 4.0]
   let curve = $derived.by(() => {
     const points: { x: number; y: number }[] = [];
     const steps = 80;
@@ -84,6 +79,66 @@
     return { points, min, max };
   });
 
+  // Sorted team table for the left list
+  type Row = {
+    team_id: number;
+    team: string;
+    rank: number;
+    wpct: number;
+    rpg: number;
+    rapg: number;
+    os: number;
+    ds: number;
+    runs_scored: number;
+    runs_allowed: number;
+    games_played: number;
+  };
+
+  let rows = $derived.by<Row[]>(() => {
+    if (teams.length === 0) return [];
+    const ranked = [...teams].sort((a, b) => b.pythag_win_pct - a.pythag_win_pct);
+    const rankMap = new Map<number, number>();
+    ranked.forEach((t, i) => rankMap.set(t.team_id, i + 1));
+    return teams.map((t) => ({
+      team_id: t.team_id,
+      team: t.team,
+      rank: rankMap.get(t.team_id) ?? 0,
+      wpct: t.pythag_win_pct,
+      rpg: t.games_played > 0 ? t.runs_scored / t.games_played : 0,
+      rapg: t.games_played > 0 ? t.runs_allowed / t.games_played : 0,
+      os: t.os,
+      ds: t.ds,
+      runs_scored: t.runs_scored,
+      runs_allowed: t.runs_allowed,
+      games_played: t.games_played,
+    }));
+  });
+
+  let sortedRows = $derived.by<Row[]>(() => {
+    const arr = [...rows];
+    arr.sort((a, b) => {
+      let av: number | string = a[sortKey];
+      let bv: number | string = b[sortKey];
+      if (typeof av === "string" && typeof bv === "string") {
+        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      return sortDir === "asc"
+        ? (av as number) - (bv as number)
+        : (bv as number) - (av as number);
+    });
+    return arr;
+  });
+
+  function setSort(k: SortKey) {
+    if (sortKey === k) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = k;
+      // Sensible default direction per column
+      sortDir = k === "team" || k === "rank" ? "asc" : "desc";
+    }
+  }
+
   async function load() {
     loading = true;
     error = null;
@@ -94,10 +149,8 @@
       optimalExponent = bundle.optimalExponent;
       exponent = optimalExponent || 1.83;
       if (teams.length >= 2) {
-        homeId = teams[0].team_id;
-        awayId = teams[1].team_id;
-        applyTeam("home", teams[0]);
-        applyTeam("away", teams[1]);
+        assignSide("home", teams[0]);
+        assignSide("away", teams[1]);
       }
     } catch (e) {
       error = String(e);
@@ -106,39 +159,55 @@
     }
   }
 
-  function applyTeam(side: "home" | "away", t: TeamStats) {
+  function assignSide(side: "home" | "away", t: TeamStats) {
     if (side === "home") {
+      homeId = t.team_id;
       homeRS = t.runs_scored;
       homeRA = t.runs_allowed;
       homeG = t.games_played;
     } else {
+      awayId = t.team_id;
       awayRS = t.runs_scored;
       awayRA = t.runs_allowed;
       awayG = t.games_played;
     }
   }
 
-  function onHomeSelect(e: Event) {
-    const id = parseInt((e.target as HTMLSelectElement).value);
-    homeId = id;
-    const t = teams.find((x) => x.team_id === id);
-    if (t) applyTeam("home", t);
+  function pickHome(t: Row) {
+    const team = teams.find((x) => x.team_id === t.team_id);
+    if (!team) return;
+    if (awayId === team.team_id) {
+      // Swap if the same team is already on the other side
+      const prevHome = teams.find((x) => x.team_id === homeId);
+      if (prevHome) assignSide("away", prevHome);
+    }
+    assignSide("home", team);
   }
-  function onAwaySelect(e: Event) {
-    const id = parseInt((e.target as HTMLSelectElement).value);
-    awayId = id;
-    const t = teams.find((x) => x.team_id === id);
-    if (t) applyTeam("away", t);
+  function pickAway(t: Row) {
+    const team = teams.find((x) => x.team_id === t.team_id);
+    if (!team) return;
+    if (homeId === team.team_id) {
+      const prevAway = teams.find((x) => x.team_id === awayId);
+      if (prevAway) assignSide("home", prevAway);
+    }
+    assignSide("away", team);
   }
 
   function resetTeam(side: "home" | "away") {
     const id = side === "home" ? homeId : awayId;
     const t = teams.find((x) => x.team_id === id);
-    if (t) applyTeam(side, t);
+    if (t) assignSide(side, t);
   }
 
   function resetExponent() {
     exponent = optimalExponent || 1.83;
+  }
+
+  function homeName(): string {
+    return teams.find((t) => t.team_id === homeId)?.team ?? "—";
+  }
+  function awayName(): string {
+    return teams.find((t) => t.team_id === awayId)?.team ?? "—";
   }
 
   onMount(load);
@@ -162,14 +231,19 @@
     PX + ((CW - PX * 2) * (exponent - 0.5)) / (4.0 - 0.5),
   );
   let markerY = $derived(CH - PY - (CH - PY * 2) * result.homeWin);
+
+  function sortArrow(k: SortKey): string {
+    if (sortKey !== k) return "";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  }
 </script>
 
 <section>
   <header class="hero">
     <h1>Playground</h1>
     <p class="subtle">
-      Drag the exponent. Change a team's runs. Watch the win % move. The math is the same one
-      that powers the predictions tab — but here you control all the inputs.
+      Pick a home and away team from the list. Tweak their runs or the Pythagorean exponent,
+      and watch the matchup math update in real time.
     </p>
   </header>
 
@@ -186,166 +260,227 @@
       <p class="muted">Loading team stats…</p>
     </div>
   {:else}
-    <div class="grid">
-      <!-- HOME -->
-      <div class="card team">
-        <header class="teamhdr">
-          <span class="lbl">Home</span>
-          <select value={homeId} onchange={onHomeSelect}>
-            {#each teams as t}
-              <option value={t.team_id}>{t.team}</option>
-            {/each}
-          </select>
+    <div class="layout">
+
+      <!-- ─── LEFT: TEAM LIST ─── -->
+      <aside class="card team-list">
+        <header class="list-hdr">
+          <h2>Teams</h2>
+          <span class="subtle small">Click <span class="badge-mini">H</span> or <span class="badge-mini">A</span> to assign a side</span>
         </header>
-        <div class="fields">
-          <label>
-            <span>Runs Scored</span>
-            <input type="number" min="0" bind:value={homeRS} />
-          </label>
-          <label>
-            <span>Runs Allowed</span>
-            <input type="number" min="0" bind:value={homeRA} />
-          </label>
-          <label>
-            <span>Games</span>
-            <input type="number" min="1" bind:value={homeG} />
-          </label>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="num sortable" onclick={() => setSort("rank")}>#{sortArrow("rank")}</th>
+                <th class="team-col sortable" onclick={() => setSort("team")}>Team{sortArrow("team")}</th>
+                <th class="num sortable" onclick={() => setSort("wpct")}>W%{sortArrow("wpct")}</th>
+                <th class="num sortable" onclick={() => setSort("rpg")}>R/G{sortArrow("rpg")}</th>
+                <th class="num sortable" onclick={() => setSort("rapg")}>RA/G{sortArrow("rapg")}</th>
+                <th class="num sortable" onclick={() => setSort("os")}>OS{sortArrow("os")}</th>
+                <th class="num sortable" onclick={() => setSort("ds")}>DS{sortArrow("ds")}</th>
+                <th class="pick">Pick</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each sortedRows as r (r.team_id)}
+                {@const isHome = r.team_id === homeId}
+                {@const isAway = r.team_id === awayId}
+                <tr class:rowhome={isHome} class:rowaway={isAway}>
+                  <td class="num dim">{r.rank}</td>
+                  <td class="team-col">{r.team}</td>
+                  <td class="num mono">{fmtPct(r.wpct, 1)}</td>
+                  <td class="num mono">{r.rpg.toFixed(2)}</td>
+                  <td class="num mono">{r.rapg.toFixed(2)}</td>
+                  <td class="num mono">{r.os.toFixed(2)}</td>
+                  <td class="num mono">{r.ds.toFixed(2)}</td>
+                  <td class="pick">
+                    <button
+                      class="pill"
+                      class:active={isHome}
+                      title="Set as Home"
+                      onclick={() => pickHome(r)}
+                    >H</button>
+                    <button
+                      class="pill"
+                      class:active={isAway}
+                      title="Set as Away"
+                      onclick={() => pickAway(r)}
+                    >A</button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
         </div>
-        <p class="readouts mono">
-          Pythag W%: <strong>{fmtPct(result.pHome, 1)}</strong>
-          &nbsp;·&nbsp; OS: {result.osH.toFixed(2)}
-          &nbsp;·&nbsp; DS: {result.dsH.toFixed(2)}
-        </p>
-        <button class="ghost small" onclick={() => resetTeam("home")}>Reset to actuals</button>
-      </div>
+      </aside>
 
-      <!-- AWAY -->
-      <div class="card team">
-        <header class="teamhdr">
-          <span class="lbl">Away</span>
-          <select value={awayId} onchange={onAwaySelect}>
-            {#each teams as t}
-              <option value={t.team_id}>{t.team}</option>
-            {/each}
-          </select>
-        </header>
-        <div class="fields">
-          <label>
-            <span>Runs Scored</span>
-            <input type="number" min="0" bind:value={awayRS} />
-          </label>
-          <label>
-            <span>Runs Allowed</span>
-            <input type="number" min="0" bind:value={awayRA} />
-          </label>
-          <label>
-            <span>Games</span>
-            <input type="number" min="1" bind:value={awayG} />
-          </label>
-        </div>
-        <p class="readouts mono">
-          Pythag W%: <strong>{fmtPct(result.pAway, 1)}</strong>
-          &nbsp;·&nbsp; OS: {result.osA.toFixed(2)}
-          &nbsp;·&nbsp; DS: {result.dsA.toFixed(2)}
-        </p>
-        <button class="ghost small" onclick={() => resetTeam("away")}>Reset to actuals</button>
-      </div>
-    </div>
+      <!-- ─── RIGHT: MATCHUP EDITOR ─── -->
+      <div class="editor">
 
-    <!-- EXPONENT SLIDER -->
-    <div class="card slider-card">
-      <header class="sliderhdr">
-        <div>
-          <span class="lbl">Pythagorean Exponent <InfoTip text="The power in W% = RS^x / (RS^x + RA^x). Bill James used 2; modern fits hover near 1.83." /></span>
-          <h2>{exponent.toFixed(2)}</h2>
-        </div>
-        <div class="rightcol">
-          <button class="ghost small" onclick={resetExponent}>
-            Use season-optimal ({optimalExponent.toFixed(2)})
-          </button>
-        </div>
-      </header>
-      <input
-        type="range"
-        min="0.5"
-        max="4.0"
-        step="0.01"
-        bind:value={exponent}
-        class="range"
-      />
-      <div class="ticks">
-        <span>0.5</span><span>1.0</span><span>1.5</span><span>2.0</span><span>2.5</span><span>3.0</span><span>3.5</span><span>4.0</span>
-      </div>
-    </div>
+        <!-- Matchup header (selected teams + edit fields) -->
+        <div class="card matchup-card">
+          <div class="matchup-head">
+            <div class="sel away-sel">
+              <span class="role">Away</span>
+              <h3>{awayName()}</h3>
+            </div>
+            <div class="vs">vs</div>
+            <div class="sel home-sel">
+              <span class="role">Home</span>
+              <h3>{homeName()}</h3>
+            </div>
+          </div>
 
-    <!-- LIVE RESULTS -->
-    <div class="card result-card">
-      <div class="result-grid">
-        <div class="result-block">
-          <span class="lbl">Home Win %</span>
-          <div class="big" class:fav={result.homeWin >= 0.5}>{fmtPct(result.homeWin, 1)}</div>
-          <span class="mono">{fmtOdds(result.homeFairOdds)} fair</span>
-        </div>
-        <div class="result-block">
-          <span class="lbl">Away Win %</span>
-          <div class="big" class:fav={result.awayWin > 0.5}>{fmtPct(result.awayWin, 1)}</div>
-          <span class="mono">{fmtOdds(result.awayFairOdds)} fair</span>
-        </div>
-        <div class="result-block">
-          <span class="lbl">Predicted Home Runs</span>
-          <div class="big">{fmtRuns(result.eHome)}</div>
-        </div>
-        <div class="result-block">
-          <span class="lbl">Predicted Away Runs</span>
-          <div class="big">{fmtRuns(result.eAway)}</div>
-        </div>
-        <div class="result-block">
-          <span class="lbl">Total Runs</span>
-          <div class="big">{fmtRuns(result.total)}</div>
-        </div>
-        <div class="result-block">
-          <span class="lbl">League Avg Runs</span>
-          <input type="number" step="0.05" min="3" max="6" bind:value={leagueAvgRuns} class="lgavg" />
-          <span class="subtle small">per team / game</span>
-        </div>
-      </div>
-    </div>
+          <div class="sides">
+            <!-- AWAY editable -->
+            <div class="side">
+              <div class="side-hdr">
+                <span class="lbl">Away · {awayName()}</span>
+                <button class="ghost small" onclick={() => resetTeam("away")}>Reset</button>
+              </div>
+              <div class="fields">
+                <label>
+                  <span>Runs Scored</span>
+                  <input type="number" min="0" bind:value={awayRS} />
+                </label>
+                <label>
+                  <span>Runs Allowed</span>
+                  <input type="number" min="0" bind:value={awayRA} />
+                </label>
+                <label>
+                  <span>Games</span>
+                  <input type="number" min="1" bind:value={awayG} />
+                </label>
+              </div>
+              <p class="readouts mono">
+                Pythag W%: <strong>{fmtPct(result.pAway, 1)}</strong>
+                &nbsp;·&nbsp; OS: {result.osA.toFixed(2)}
+                &nbsp;·&nbsp; DS: {result.dsA.toFixed(2)}
+              </p>
+            </div>
 
-    <!-- SENSITIVITY CHART -->
-    <div class="card chart-card">
-      <h3>Sensitivity: home win % vs. exponent</h3>
-      <p class="subtle small">
-        How much does the prediction shift as we vary the exponent across [0.5, 4.0]?
-        The vertical line is your current value.
-      </p>
-      <svg
-        viewBox={`0 0 ${CW} ${CH}`}
-        preserveAspectRatio="none"
-        class="chart"
-        aria-label="Home win probability sensitivity"
-      >
-        <!-- 50% line -->
-        <line
-          x1={PX}
-          x2={CW - PX}
-          y1={CH - PY - (CH - PY * 2) * 0.5}
-          y2={CH - PY - (CH - PY * 2) * 0.5}
-          class="axis-mid"
-        />
-        <!-- curve -->
-        <path d={pathD} class="curve" />
-        <!-- current exponent marker -->
-        <line x1={markerX} x2={markerX} y1={PY} y2={CH - PY} class="marker-x" />
-        <circle cx={markerX} cy={markerY} r="4" class="marker-pt" />
-        <!-- y-axis labels -->
-        <text x="4" y={PY + 6} class="tick">100%</text>
-        <text x="4" y={CH - PY + 4} class="tick">0%</text>
-        <text x="4" y={CH - PY - (CH - PY * 2) * 0.5 + 4} class="tick">50%</text>
-        <!-- x-axis labels -->
-        <text x={PX} y={CH - 1} class="tick">0.5</text>
-        <text x={PX + (CW - PX * 2) * (2.0 - 0.5) / (4 - 0.5)} y={CH - 1} class="tick" text-anchor="middle">2.0</text>
-        <text x={CW - PX} y={CH - 1} class="tick" text-anchor="end">4.0</text>
-      </svg>
+            <!-- HOME editable -->
+            <div class="side">
+              <div class="side-hdr">
+                <span class="lbl">Home · {homeName()}</span>
+                <button class="ghost small" onclick={() => resetTeam("home")}>Reset</button>
+              </div>
+              <div class="fields">
+                <label>
+                  <span>Runs Scored</span>
+                  <input type="number" min="0" bind:value={homeRS} />
+                </label>
+                <label>
+                  <span>Runs Allowed</span>
+                  <input type="number" min="0" bind:value={homeRA} />
+                </label>
+                <label>
+                  <span>Games</span>
+                  <input type="number" min="1" bind:value={homeG} />
+                </label>
+              </div>
+              <p class="readouts mono">
+                Pythag W%: <strong>{fmtPct(result.pHome, 1)}</strong>
+                &nbsp;·&nbsp; OS: {result.osH.toFixed(2)}
+                &nbsp;·&nbsp; DS: {result.dsH.toFixed(2)}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Exponent slider -->
+        <div class="card slider-card">
+          <header class="sliderhdr">
+            <div>
+              <span class="lbl">Pythagorean Exponent <InfoTip text="The power in W% = RS^x / (RS^x + RA^x). Bill James used 2; modern fits hover near 1.83." /></span>
+              <h2>{exponent.toFixed(2)}</h2>
+            </div>
+            <div class="rightcol">
+              <button class="ghost small" onclick={resetExponent}>
+                Use season-optimal ({optimalExponent.toFixed(2)})
+              </button>
+            </div>
+          </header>
+          <input
+            type="range"
+            min="0.5"
+            max="4.0"
+            step="0.01"
+            bind:value={exponent}
+            class="range"
+          />
+          <div class="ticks">
+            <span>0.5</span><span>1.0</span><span>1.5</span><span>2.0</span><span>2.5</span><span>3.0</span><span>3.5</span><span>4.0</span>
+          </div>
+        </div>
+
+        <!-- Live results -->
+        <div class="card result-card">
+          <div class="result-grid">
+            <div class="result-block">
+              <span class="lbl">Away Win %</span>
+              <div class="big" class:fav={result.awayWin > 0.5}>{fmtPct(result.awayWin, 1)}</div>
+              <span class="mono">{fmtOdds(result.awayFairOdds)} fair</span>
+            </div>
+            <div class="result-block">
+              <span class="lbl">Home Win %</span>
+              <div class="big" class:fav={result.homeWin >= 0.5}>{fmtPct(result.homeWin, 1)}</div>
+              <span class="mono">{fmtOdds(result.homeFairOdds)} fair</span>
+            </div>
+            <div class="result-block">
+              <span class="lbl">League Avg Runs</span>
+              <input type="number" step="0.05" min="3" max="6" bind:value={leagueAvgRuns} class="lgavg" />
+              <span class="subtle small">per team / game</span>
+            </div>
+            <div class="result-block">
+              <span class="lbl">Predicted Away Runs</span>
+              <div class="big">{fmtRuns(result.eAway)}</div>
+            </div>
+            <div class="result-block">
+              <span class="lbl">Predicted Home Runs</span>
+              <div class="big">{fmtRuns(result.eHome)}</div>
+            </div>
+            <div class="result-block">
+              <span class="lbl">Total Runs</span>
+              <div class="big">{fmtRuns(result.total)}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sensitivity chart -->
+        <div class="card chart-card">
+          <h3>Sensitivity: home win % vs. exponent</h3>
+          <p class="subtle small">
+            How much does the prediction shift as we vary the exponent across [0.5, 4.0]?
+            The vertical line is your current value.
+          </p>
+          <svg
+            viewBox={`0 0 ${CW} ${CH}`}
+            preserveAspectRatio="none"
+            class="chart"
+            aria-label="Home win probability sensitivity"
+          >
+            <line
+              x1={PX}
+              x2={CW - PX}
+              y1={CH - PY - (CH - PY * 2) * 0.5}
+              y2={CH - PY - (CH - PY * 2) * 0.5}
+              class="axis-mid"
+            />
+            <path d={pathD} class="curve" />
+            <line x1={markerX} x2={markerX} y1={PY} y2={CH - PY} class="marker-x" />
+            <circle cx={markerX} cy={markerY} r="4" class="marker-pt" />
+            <text x="4" y={PY + 6} class="tick">100%</text>
+            <text x="4" y={CH - PY + 4} class="tick">0%</text>
+            <text x="4" y={CH - PY - (CH - PY * 2) * 0.5 + 4} class="tick">50%</text>
+            <text x={PX} y={CH - 1} class="tick">0.5</text>
+            <text x={PX + (CW - PX * 2) * (2.0 - 0.5) / (4 - 0.5)} y={CH - 1} class="tick" text-anchor="middle">2.0</text>
+            <text x={CW - PX} y={CH - 1} class="tick" text-anchor="end">4.0</text>
+          </svg>
+        </div>
+
+      </div>
     </div>
   {/if}
 </section>
@@ -357,30 +492,206 @@
   .hero p {
     max-width: 64ch;
   }
-  .grid {
+
+  /* ─── TWO-PANE LAYOUT ─── */
+  .layout {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
     gap: 16px;
-    margin-bottom: 16px;
+    align-items: stretch;
   }
-  @media (max-width: 760px) {
-    .grid {
+  @media (max-width: 1000px) {
+    .layout {
       grid-template-columns: 1fr;
     }
   }
-  .team {
+
+  /* LEFT: team list */
+  .team-list {
+    padding: 0;
+    overflow: hidden;
+    min-width: 0;
+  }
+  .list-hdr {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    gap: 10px;
+  }
+  .list-hdr h2 {
+    margin: 0;
+    font-size: 1.05rem;
+  }
+  .table-wrap {
+    overflow-x: auto;
+  }
+  .team-list table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  .team-list th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-elev);
+    text-align: left;
+    padding: 8px 10px;
+    font-weight: 500;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-mute);
+    border-bottom: 1px solid var(--line-soft);
+    user-select: none;
+  }
+  .team-list th.sortable {
+    cursor: pointer;
+  }
+  .team-list th.sortable:hover {
+    color: var(--ink);
+  }
+  .team-list th.num,
+  .team-list td.num {
+    text-align: right;
+  }
+  .team-list td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    line-height: 1.2;
+  }
+  .team-list tr:last-child td {
+    border-bottom: none;
+  }
+  .team-list tr:hover td {
+    background: var(--bg-soft);
+  }
+  .team-col {
+    white-space: nowrap;
+    color: var(--ink);
+  }
+  .dim {
+    color: var(--ink-mute);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .mono {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .pick {
+    text-align: center;
+    white-space: nowrap;
+  }
+  .pill {
+    display: inline-block;
+    min-width: 26px;
+    padding: 3px 7px;
+    margin: 0 1px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-soft);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .pill:hover {
+    border-color: var(--ink);
+    color: var(--ink);
+  }
+  .pill.active {
+    background: var(--good);
+    border-color: var(--good);
+    color: var(--bg);
+  }
+  .rowhome td {
+    background: color-mix(in srgb, var(--good) 8%, transparent);
+  }
+  .rowaway td {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .rowhome:hover td {
+    background: color-mix(in srgb, var(--good) 14%, transparent);
+  }
+  .rowaway:hover td {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .badge-mini {
+    display: inline-block;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--ink-soft);
+  }
+
+  /* RIGHT: matchup editor */
+  .editor {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+  }
+  .matchup-card {
     padding: 16px 18px;
   }
-  .teamhdr {
-    display: flex;
+  .matchup-head {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line-soft);
+    margin-bottom: 14px;
   }
-  .teamhdr select {
-    flex: 1;
-    font-weight: 600;
-    font-size: 1rem;
+  .sel { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .sel.away-sel { text-align: left; }
+  .sel.home-sel { text-align: right; }
+  .sel h3 {
+    margin: 0;
+    font-family: var(--serif);
+    font-size: 1.4rem;
+    line-height: 1.1;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .role {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-mute);
+  }
+  .vs {
+    font-family: var(--mono);
+    color: var(--ink-mute);
+    font-size: 0.9rem;
+  }
+  .sides {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 700px) {
+    .sides { grid-template-columns: 1fr; }
+  }
+  .side {
+    background: var(--bg-soft);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    min-width: 0;
+  }
+  .side-hdr {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 8px;
   }
   .lbl {
     font-size: 0.72rem;
@@ -391,36 +702,41 @@
   .fields {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
-    gap: 10px;
-    margin-bottom: 10px;
+    gap: 8px;
+    margin-bottom: 8px;
   }
   .fields label {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 0.78rem;
+    gap: 3px;
+    font-size: 0.74rem;
     color: var(--ink-soft);
+    min-width: 0;
+  }
+  .fields input {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
   }
   .readouts {
     color: var(--ink-soft);
-    font-size: 0.85rem;
-    margin: 6px 0 10px;
+    font-size: 0.8rem;
+    margin: 4px 0 0;
   }
   .small {
     font-size: 0.82rem;
   }
-  .slider-card {
-    margin-bottom: 16px;
-  }
+
   .sliderhdr {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
     margin-bottom: 8px;
+    gap: 10px;
   }
   .sliderhdr h2 {
     font-family: var(--mono);
-    font-size: 2rem;
+    font-size: 1.8rem;
     margin: 4px 0 0;
   }
   .rightcol {
@@ -438,13 +754,11 @@
     font-size: 0.72rem;
     color: var(--ink-mute);
   }
-  .result-card {
-    margin-bottom: 16px;
-  }
+
   .result-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
+    gap: 14px;
   }
   @media (max-width: 700px) {
     .result-grid {
@@ -455,25 +769,31 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
   }
   .result-block .big {
     font-family: var(--serif);
-    font-size: 1.7rem;
+    font-size: 1.55rem;
     font-weight: 600;
   }
   .result-block .big.fav {
     color: var(--good);
   }
   .lgavg {
-    max-width: 80px;
+    max-width: 90px;
     margin-top: 2px;
   }
+
   .chart-card {
-    padding-bottom: 6px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
   }
   .chart {
     width: 100%;
     height: 170px;
+    flex: 1;
+    min-height: 170px;
   }
   .axis-mid {
     stroke: var(--line);
