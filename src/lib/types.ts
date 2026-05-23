@@ -66,3 +66,32 @@ export type TeamInput = {
   runsAllowed: number;
   games: number;
 };
+
+export type TeamStanding = {
+  teamId: number;
+  teamName: string;
+  divisionId: number;
+  leagueId: number;
+  wins: number;
+  losses: number;
+  pct: string;
+  gamesBack: string;
+  wildCardRank: number | null;
+  wildCardGamesBack: string;
+  divisionRank: number;
+  leagueRank: number;
+  runsScored: number;
+  runsAllowed: number;
+  runDifferential: number;
+  streakCode: string | null;
+  lastTenWins: number;
+  lastTenLosses: number;
+  divisionLeader: boolean;
+  clinched: boolean;
+};
+
+export type StandingsBundle = {
+  season: number;
+  lastUpdated: string;
+  teams: TeamStanding[];
+};

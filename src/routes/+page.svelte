@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPredictions, getTeamStats, refreshSchedule } from "$lib/api";
-  import type { PredictionsBundle, TeamStats } from "$lib/types";
+  import { getPredictions, getStandings, getTeamStats, refreshSchedule } from "$lib/api";
+  import type { PredictionsBundle, TeamStats, TeamStanding } from "$lib/types";
   import { fmtPct, fmtOdds, fmtRuns, todayISO, relativeTime, downloadCSV } from "$lib/format";
   import InfoTip from "$lib/components/InfoTip.svelte";
 
@@ -12,6 +12,7 @@
   let bundle = $state<PredictionsBundle | null>(null);
   let teamsByName = $state<Map<string, TeamStats>>(new Map());
   let rankByName = $state<Map<string, number>>(new Map());
+  let standingByTeamId = $state<Map<number, TeamStanding>>(new Map());
   let useOptimalExp = $state(true);
   let manualExp = $state(2.0);
   let includePitchers = $state(true);
@@ -20,13 +21,14 @@
     loading = true;
     error = null;
     try {
-      const [pred, ts] = await Promise.all([
+      const [pred, ts, st] = await Promise.all([
         getPredictions({
           date,
           exponent: useOptimalExp ? undefined : manualExp,
           includePitchers,
         }),
         getTeamStats({ exponent: useOptimalExp ? undefined : manualExp }),
+        getStandings(),
       ]);
       bundle = pred;
       const byName = new Map<string, TeamStats>();
@@ -37,6 +39,11 @@
       const ranks = new Map<string, number>();
       ranked.forEach((t, i) => ranks.set(t.team, i + 1));
       rankByName = ranks;
+      // Standings keyed by team_id (the only stable join — names differ
+      // between endpoints: standings says "Rays", schedule says "Tampa Bay Rays").
+      const stByTeam = new Map<number, TeamStanding>();
+      for (const t of st.teams) stByTeam.set(t.teamId, t);
+      standingByTeamId = stByTeam;
     } catch (e) {
       error = String(e);
     } finally {
@@ -99,6 +106,14 @@
       return { ...g, gameTag: `Game ${idx}` };
     });
   });
+
+  function recordFor(teamName: string): string | null {
+    const ts = teamsByName.get(teamName);
+    if (!ts) return null;
+    const st = standingByTeamId.get(ts.team_id);
+    if (!st) return null;
+    return `${st.wins}-${st.losses}`;
+  }
 
   function rpg(t: TeamStats | undefined): string {
     if (!t || t.games_played === 0) return "—";
@@ -235,7 +250,10 @@
               <!-- AWAY (left) -->
               <div class="side away">
                 <h2 class="tname">{g.away}</h2>
-                <span class="role">Away</span>
+                <span class="role">
+                  Away
+                  {#if recordFor(g.away)}<span class="record">({recordFor(g.away)})</span>{/if}
+                </span>
                 {#if g.awayPitcher}
                   <div class="pitcher" class:pitcher-faded={!g.awayPitcher.applied}>
                     <span class="pname">{g.awayPitcher.name}</span>
@@ -296,7 +314,10 @@
               <!-- HOME (right) -->
               <div class="side home">
                 <h2 class="tname">{g.home}</h2>
-                <span class="role">Home</span>
+                <span class="role">
+                  Home
+                  {#if recordFor(g.home)}<span class="record">({recordFor(g.home)})</span>{/if}
+                </span>
                 {#if g.homePitcher}
                   <div class="pitcher" class:pitcher-faded={!g.homePitcher.applied}>
                     <span class="pname">{g.homePitcher.name}</span>
@@ -562,6 +583,13 @@
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--ink-mute);
+  }
+  .record {
+    font-family: var(--mono);
+    margin-left: 4px;
+    font-variant-numeric: tabular-nums;
+    text-transform: none;
+    letter-spacing: 0;
   }
 
   .pitcher {

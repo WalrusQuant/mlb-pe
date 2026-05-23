@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 const SCHEDULE_BASE: &str = "https://statsapi.mlb.com/api/v1/schedule";
 const PEOPLE_BASE: &str = "https://statsapi.mlb.com/api/v1/people";
+const STANDINGS_BASE: &str = "https://statsapi.mlb.com/api/v1/standings";
 const USER_AGENT: &str = "mlb-pe-tauri/0.1 (github.com/adamwickwire/mlb-pe)";
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +325,169 @@ struct ApiPitchingStat {
     innings_pitched: Option<String>,
     #[serde(rename = "gamesStarted", default)]
     games_started: Option<i32>,
+}
+
+// ─── STANDINGS ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStanding {
+    pub team_id: i32,
+    pub team_name: String,
+    pub division_id: i32,
+    pub league_id: i32,
+    pub wins: i32,
+    pub losses: i32,
+    pub pct: String,         // e.g. ".694" — keep as a string to match scoreboard convention
+    pub games_back: String,  // "-" for division leader, else like "2.5"
+    pub wild_card_rank: Option<i32>,
+    pub wild_card_games_back: String,
+    pub division_rank: i32,
+    pub league_rank: i32,
+    pub runs_scored: i32,
+    pub runs_allowed: i32,
+    pub run_differential: i32,
+    pub streak_code: Option<String>, // e.g. "W5", "L3"
+    pub last_ten_wins: i32,
+    pub last_ten_losses: i32,
+    pub division_leader: bool,
+    pub clinched: bool,
+}
+
+pub async fn fetch_standings(season: i32) -> Result<Vec<TeamStanding>> {
+    let url = format!(
+        "{}?leagueId=103,104&season={}&standingsTypes=regularSeason",
+        STANDINGS_BASE, season
+    );
+    let client = http_client()?;
+    let resp: ApiStandingsResponse = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {} failed", url))?
+        .error_for_status()
+        .context("non-2xx response from MLB standings API")?
+        .json()
+        .await
+        .context("failed to deserialize MLB standings")?;
+
+    let mut out = Vec::with_capacity(30);
+    for rec in resp.records {
+        let div_id = rec.division.id;
+        let lg_id = rec.league.id;
+        for tr in rec.team_records {
+            let (l10w, l10l) = tr
+                .records
+                .as_ref()
+                .map(|r| {
+                    let split = r
+                        .split_records
+                        .iter()
+                        .find(|s| s.r#type == "lastTen");
+                    match split {
+                        Some(s) => (s.wins, s.losses),
+                        None => (0, 0),
+                    }
+                })
+                .unwrap_or((0, 0));
+            out.push(TeamStanding {
+                team_id: tr.team.id,
+                team_name: tr.team.name,
+                division_id: div_id,
+                league_id: lg_id,
+                wins: tr.wins,
+                losses: tr.losses,
+                pct: tr.winning_percentage,
+                games_back: tr.games_back,
+                wild_card_rank: tr.wild_card_rank.and_then(|s| s.parse().ok()),
+                wild_card_games_back: tr.wild_card_games_back,
+                division_rank: tr.division_rank.parse().unwrap_or(0),
+                league_rank: tr.league_rank.parse().unwrap_or(0),
+                runs_scored: tr.runs_scored,
+                runs_allowed: tr.runs_allowed,
+                run_differential: tr.run_differential,
+                streak_code: tr.streak.map(|s| s.streak_code),
+                last_ten_wins: l10w,
+                last_ten_losses: l10l,
+                division_leader: tr.division_leader,
+                clinched: tr.clinched,
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiStandingsResponse {
+    #[serde(default)]
+    records: Vec<ApiStandingsRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiStandingsRecord {
+    division: ApiIdRef,
+    league: ApiIdRef,
+    #[serde(rename = "teamRecords", default)]
+    team_records: Vec<ApiTeamRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiIdRef {
+    id: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiTeamRecord {
+    team: ApiTeam,
+    wins: i32,
+    losses: i32,
+    #[serde(rename = "winningPercentage")]
+    winning_percentage: String,
+    #[serde(rename = "gamesBack")]
+    games_back: String,
+    #[serde(rename = "wildCardRank", default)]
+    wild_card_rank: Option<String>,
+    #[serde(rename = "wildCardGamesBack", default = "default_dash")]
+    wild_card_games_back: String,
+    #[serde(rename = "divisionRank")]
+    division_rank: String,
+    #[serde(rename = "leagueRank")]
+    league_rank: String,
+    #[serde(rename = "runsScored")]
+    runs_scored: i32,
+    #[serde(rename = "runsAllowed")]
+    runs_allowed: i32,
+    #[serde(rename = "runDifferential")]
+    run_differential: i32,
+    #[serde(default)]
+    streak: Option<ApiStreak>,
+    #[serde(default)]
+    records: Option<ApiRecordsBundle>,
+    #[serde(rename = "divisionLeader", default)]
+    division_leader: bool,
+    #[serde(default)]
+    clinched: bool,
+}
+
+fn default_dash() -> String { "-".to_string() }
+
+#[derive(Debug, Deserialize)]
+struct ApiStreak {
+    #[serde(rename = "streakCode")]
+    streak_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiRecordsBundle {
+    #[serde(rename = "splitRecords", default)]
+    split_records: Vec<ApiSplitRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiSplitRecord {
+    wins: i32,
+    losses: i32,
+    r#type: String,
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   PredictionsBundle,
   Prediction,
+  StandingsBundle,
   TeamStatsBundle,
   TeamInput,
 } from "./types";
@@ -28,6 +29,10 @@ export async function getOptimalExponent(season?: number): Promise<number> {
 
 export async function refreshSchedule(season?: number): Promise<number> {
   return await invoke<number>("refresh_schedule", { season });
+}
+
+export async function getStandings(season?: number): Promise<StandingsBundle> {
+  return await invoke<StandingsBundle>("get_standings", { season });
 }
 
 export async function computeMatchup(

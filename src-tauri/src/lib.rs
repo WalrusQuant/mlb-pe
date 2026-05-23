@@ -12,7 +12,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use mlb_api::{fetch_pitcher_stats, fetch_schedule, Game, PitcherStats};
+use mlb_api::{fetch_pitcher_stats, fetch_schedule, fetch_standings, Game, PitcherStats, TeamStanding};
 use model::{
     compute_team_stats, estimate_game, estimate_game_with_pitchers, optimize_exponent,
     prob_to_american_odds, pythag_win_pct, round_to, GameRow, PitcherAdj, PitcherInfo, Prediction,
@@ -21,6 +21,7 @@ use model::{
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 const PITCHER_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour — ERA changes slowly
+const STANDINGS_CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 
 pub struct AppState {
     cache: Mutex<Cache>,
@@ -31,6 +32,7 @@ struct Cache {
     schedule: Option<(i32, Vec<Game>, Instant)>,
     optimal_exp: HashMap<i32, f64>,
     pitchers: HashMap<i32, (PitcherStats, Instant)>,
+    standings: Option<(i32, Vec<TeamStanding>, Instant)>,
 }
 
 impl AppState {
@@ -119,6 +121,28 @@ impl AppState {
             found.extend(fetched);
         }
         Ok(found)
+    }
+
+    async fn get_standings(&self, season: i32, force: bool) -> Result<Vec<TeamStanding>, String> {
+        if !force {
+            let cached = {
+                let cache = self.cache.lock().unwrap();
+                cache.standings.as_ref().and_then(|(s, st, t)| {
+                    if *s == season && t.elapsed() < STANDINGS_CACHE_TTL {
+                        Some(st.clone())
+                    } else {
+                        None
+                    }
+                })
+            };
+            if let Some(st) = cached {
+                return Ok(st);
+            }
+        }
+        let st = fetch_standings(season).await.map_err(|e| e.to_string())?;
+        let mut cache = self.cache.lock().unwrap();
+        cache.standings = Some((season, st.clone(), Instant::now()));
+        Ok(st)
     }
 }
 
@@ -317,6 +341,28 @@ async fn refresh_schedule(
     Ok(games.len())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StandingsBundle {
+    season: i32,
+    last_updated: String,
+    teams: Vec<TeamStanding>,
+}
+
+#[tauri::command]
+async fn get_standings(
+    state: State<'_, AppState>,
+    season: Option<i32>,
+) -> Result<StandingsBundle, String> {
+    let season = season.unwrap_or_else(default_season);
+    let teams = state.get_standings(season, false).await?;
+    Ok(StandingsBundle {
+        season,
+        last_updated: Utc::now().to_rfc3339(),
+        teams,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamInput {
@@ -427,6 +473,7 @@ pub fn run() {
             get_team_stats,
             get_optimal_exponent,
             refresh_schedule,
+            get_standings,
             compute_matchup,
             pythag_curve,
             american_odds,
