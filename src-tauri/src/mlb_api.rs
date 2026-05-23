@@ -71,6 +71,12 @@ fn normalize(resp: ApiScheduleResponse) -> Vec<Game> {
     for day in resp.dates {
         let date = day.date;
         for g in day.games {
+            // The schedule API keeps placeholder records for postponed/cancelled games AND
+            // the rescheduled record (same gamePk, different dates[] entry). Drop the
+            // placeholder — otherwise the rescheduled date shows the matchup twice.
+            if matches!(g.status.detailed_state.as_str(), "Postponed" | "Cancelled") {
+                continue;
+            }
             let status = match g.status.abstract_game_state.as_str() {
                 "Final" => GameStatus::Final,
                 "Live" => GameStatus::Live,
@@ -125,6 +131,8 @@ struct ApiGame {
 struct ApiStatus {
     #[serde(rename = "abstractGameState")]
     abstract_game_state: String,
+    #[serde(rename = "detailedState", default)]
+    detailed_state: String,
 }
 
 #[derive(Debug, Deserialize)]

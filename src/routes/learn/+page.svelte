@@ -1,17 +1,37 @@
 <script lang="ts">
   import Formula from "$lib/components/Formula.svelte";
+
+  const toc = [
+    { id: "idea", label: "1 · The idea" },
+    { id: "why", label: "2 · Why it works" },
+    { id: "log5", label: "3 · Combining two teams" },
+    { id: "score", label: "4 · Predicting the score" },
+    { id: "odds", label: "5 · Fair odds" },
+    { id: "example", label: "6 · Worked example" },
+    { id: "limits", label: "7 · What it doesn't do" },
+  ];
 </script>
 
-<article class="learn">
-  <header>
-    <h1>What is Pythagorean Expectation?</h1>
-    <p class="lede">
-      A 40-year-old idea from baseball stats that says: <em>the runs a team scores and allows tell you most of what you need to know about how often it wins.</em>
-      Everything in this app — win probabilities, predicted scores, fair odds — falls out of that.
-    </p>
-  </header>
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ul>
+      {#each toc as item}
+        <li><a href={`#${item.id}`}>{item.label}</a></li>
+      {/each}
+    </ul>
+  </aside>
 
-  <section>
+  <article class="learn">
+    <header>
+      <h1>What is Pythagorean Expectation?</h1>
+      <p class="lede">
+        A 40-year-old idea from baseball stats that says: <em>the runs a team scores and allows tell you most of what you need to know about how often it wins.</em>
+        Everything in this app — win probabilities, predicted scores, fair odds — falls out of that.
+      </p>
+    </header>
+
+  <section id="idea">
     <h2>1 · The idea</h2>
     <p>
       In 1980, Bill James (the sabermetrician behind <em>Moneyball</em>'s intellectual roots) was looking for a simple way to estimate
@@ -37,7 +57,7 @@
     </p>
   </section>
 
-  <section>
+  <section id="why">
     <h2>2 · Why it works</h2>
     <p>
       Run differential is a noisier-than-you-think predictor of wins because a single blowout
@@ -51,7 +71,7 @@
     </p>
   </section>
 
-  <section>
+  <section id="log5">
     <h2>3 · Combining two teams (log5)</h2>
     <p>
       Pythagorean gives each team a standalone strength, but we need to predict <em>a specific matchup</em>.
@@ -73,7 +93,7 @@
     </p>
   </section>
 
-  <section>
+  <section id="score">
     <h2>4 · Predicting the score</h2>
     <p>
       Win probability tells us <em>who</em>, but not <em>by how much</em>. To predict runs, we score each team's offense and defense
@@ -102,7 +122,7 @@
     </p>
   </section>
 
-  <section>
+  <section id="odds">
     <h2>5 · From probability to fair odds</h2>
     <p>
       Sportsbooks quote prices in American odds: a favorite gets a minus sign (<span class="mono">-150</span>) and the
@@ -121,7 +141,7 @@
     </p>
   </section>
 
-  <section>
+  <section id="example">
     <h2>6 · Worked example</h2>
     <div class="example">
       <p>
@@ -148,7 +168,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="limits">
     <h2>7 · What this model doesn't do</h2>
     <ul>
       <li>It doesn't know <strong>who's pitching</strong>. The 2025 ace vs. a spot starter is invisible to season-long aggregates.</li>
@@ -169,11 +189,62 @@
       edit the teams, watch the win % move.
     </p>
   </section>
-</article>
+  </article>
+</div>
 
 <style>
+  .layout {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 64px;
+    align-items: start;
+  }
   .learn {
-    max-width: 70ch;
+    min-width: 0;
+  }
+  .toc {
+    position: sticky;
+    top: 90px;
+    font-size: 0.88rem;
+    border-right: 1px solid var(--line-soft);
+    padding-right: 18px;
+  }
+  .toc-title {
+    margin: 0 0 10px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    font-weight: 600;
+  }
+  .toc ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    color: var(--ink-soft);
+  }
+  .toc li {
+    margin: 0;
+  }
+  .toc a {
+    display: block;
+    padding: 5px 0;
+    color: var(--ink-soft);
+    text-decoration: none;
+    line-height: 1.35;
+  }
+  .toc a:hover {
+    color: var(--ink);
+  }
+  @media (max-width: 980px) {
+    .layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .toc {
+      display: none;
+      border-right: none;
+      padding-right: 0;
+    }
   }
   .lede {
     font-size: 1.1rem;

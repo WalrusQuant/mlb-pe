@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPredictions, refreshSchedule } from "$lib/api";
-  import type { PredictionsBundle } from "$lib/types";
+  import { getPredictions, getTeamStats, refreshSchedule } from "$lib/api";
+  import type { PredictionsBundle, TeamStats } from "$lib/types";
   import { fmtPct, fmtOdds, fmtRuns, todayISO, relativeTime, downloadCSV } from "$lib/format";
   import InfoTip from "$lib/components/InfoTip.svelte";
 
@@ -10,6 +10,8 @@
   let refreshing = $state(false);
   let error = $state<string | null>(null);
   let bundle = $state<PredictionsBundle | null>(null);
+  let teamsByName = $state<Map<string, TeamStats>>(new Map());
+  let rankByName = $state<Map<string, number>>(new Map());
   let useOptimalExp = $state(true);
   let manualExp = $state(2.0);
 
@@ -17,10 +19,22 @@
     loading = true;
     error = null;
     try {
-      bundle = await getPredictions({
-        date,
-        exponent: useOptimalExp ? undefined : manualExp,
-      });
+      const [pred, ts] = await Promise.all([
+        getPredictions({
+          date,
+          exponent: useOptimalExp ? undefined : manualExp,
+        }),
+        getTeamStats({ exponent: useOptimalExp ? undefined : manualExp }),
+      ]);
+      bundle = pred;
+      const byName = new Map<string, TeamStats>();
+      for (const t of ts.teams) byName.set(t.team, t);
+      teamsByName = byName;
+      // Rank teams by Pythagorean win % (descending). 1 = best.
+      const ranked = [...ts.teams].sort((a, b) => b.pythag_win_pct - a.pythag_win_pct);
+      const ranks = new Map<string, number>();
+      ranked.forEach((t, i) => ranks.set(t.team, i + 1));
+      rankByName = ranks;
     } catch (e) {
       error = String(e);
     } finally {
@@ -63,6 +77,34 @@
     const after = bundle.availableDates.find((d) => d >= todayISO()) ?? bundle.availableDates[0];
     date = after;
     load();
+  }
+
+  // Tag doubleheaders so a duplicated matchup reads as G1/G2 instead of looking copy-pasted.
+  let taggedGames = $derived.by(() => {
+    if (!bundle) return [];
+    const counts = new Map<string, number>();
+    for (const g of bundle.games) {
+      const k = `${g.home}|${g.away}`;
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    const seen = new Map<string, number>();
+    return bundle.games.map((g) => {
+      const k = `${g.home}|${g.away}`;
+      const total = counts.get(k) ?? 1;
+      if (total <= 1) return { ...g, gameTag: "" };
+      const idx = (seen.get(k) ?? 0) + 1;
+      seen.set(k, idx);
+      return { ...g, gameTag: `Game ${idx}` };
+    });
+  });
+
+  function rpg(t: TeamStats | undefined): string {
+    if (!t || t.games_played === 0) return "—";
+    return (t.runs_scored / t.games_played).toFixed(1);
+  }
+  function rapg(t: TeamStats | undefined): string {
+    if (!t || t.games_played === 0) return "—";
+    return (t.runs_allowed / t.games_played).toFixed(1);
   }
 
   onMount(load);
@@ -159,40 +201,106 @@
         {/if}
       </div>
     {:else}
-      <div class="card table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Matchup</th>
-              <th>Home Win<InfoTip text="P(home wins) via log5 of team Pythagorean win %." /></th>
-              <th>Fair Home<InfoTip text="The 'no-vig' American odds implied by the win probability." /></th>
-              <th>Away Win</th>
-              <th>Fair Away</th>
-              <th>H Runs<InfoTip text="OS_home × DS_away × league-avg runs." /></th>
-              <th>A Runs</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each bundle.games as g (g.home + g.away)}
-              {@const homeFav = g.homeWinProb >= 0.5}
-              <tr>
-                <td class="matchup">
-                  <div class="away muted">{g.away}</div>
-                  <div class="at">@</div>
-                  <div class="home">{g.home}</div>
-                </td>
-                <td class:fav={homeFav}>{fmtPct(g.homeWinProb)}</td>
-                <td class="mono">{fmtOdds(g.homeFairOdds)}</td>
-                <td class:fav={!homeFav}>{fmtPct(g.awayWinProb)}</td>
-                <td class="mono">{fmtOdds(g.awayFairOdds)}</td>
-                <td>{fmtRuns(g.homePredRuns)}</td>
-                <td>{fmtRuns(g.awayPredRuns)}</td>
-                <td class="strong">{fmtRuns(g.totalRuns)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      <div class="matchup-grid">
+        {#each taggedGames as g}
+          {@const awayTeam = teamsByName.get(g.away)}
+          {@const homeTeam = teamsByName.get(g.home)}
+          {@const awayWin = g.awayWinProb >= 0.5}
+          {@const homeWin = g.homeWinProb >= 0.5}
+          <article class="card matchup">
+            {#if g.gameTag}
+              <div class="dh-tag">{g.gameTag}</div>
+            {/if}
+
+            <div class="grid">
+              <!-- AWAY (left) -->
+              <div class="side away">
+                <h2 class="tname">{g.away}</h2>
+                <span class="role">Away</span>
+              </div>
+
+              <!-- CENTER: probs, bars, projected runs -->
+              <div class="center">
+                <div class="probs">
+                  <div class="prob" class:winner={awayWin}>
+                    {fmtPct(g.awayWinProb, 1)}
+                  </div>
+                  <div class="prob" class:winner={homeWin}>
+                    {fmtPct(g.homeWinProb, 1)}
+                  </div>
+                </div>
+                <div class="bars">
+                  <div class="bar bar-away" class:winner={awayWin}>
+                    <span class="fill" style="--w: {(g.awayWinProb * 100).toFixed(1)}%"></span>
+                  </div>
+                  <div class="bar bar-home" class:winner={homeWin}>
+                    <span class="fill" style="--w: {(g.homeWinProb * 100).toFixed(1)}%"></span>
+                  </div>
+                </div>
+                <div class="winlabels">
+                  <span class="winlabel" class:winner={awayWin}>{g.away.split(" ").pop()} Win</span>
+                  <span class="winlabel" class:winner={homeWin}>{g.home.split(" ").pop()} Win</span>
+                </div>
+
+                <div class="proj">
+                  <div class="proj-num">{fmtRuns(g.awayPredRuns)}</div>
+                  <div class="proj-label">Projected Runs</div>
+                  <div class="proj-num">{fmtRuns(g.homePredRuns)}</div>
+                </div>
+
+                <div class="odds">
+                  <span class="odds-val" class:winner={awayWin}>{fmtOdds(g.awayFairOdds)}</span>
+                  <span class="odds-label">Fair Odds</span>
+                  <span class="odds-val" class:winner={homeWin}>{fmtOdds(g.homeFairOdds)}</span>
+                </div>
+              </div>
+
+              <!-- HOME (right) -->
+              <div class="side home">
+                <h2 class="tname">{g.home}</h2>
+                <span class="role">Home</span>
+              </div>
+
+              <!-- AWAY stats (under left) -->
+              <div class="stats stats-away">
+                <div class="stat">
+                  <span class="stat-label">Rank</span>
+                  <span class="stat-val">{rankByName.get(g.away) ?? "—"}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">R/G</span>
+                  <span class="stat-val">{rpg(awayTeam)}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">RA/G</span>
+                  <span class="stat-val">{rapg(awayTeam)}</span>
+                </div>
+              </div>
+
+              <!-- center spacer (total runs under projected) -->
+              <div class="total-line">
+                <span class="total-label">Total Runs</span>
+                <span class="total-val">{fmtRuns(g.totalRuns)}</span>
+              </div>
+
+              <!-- HOME stats (under right) -->
+              <div class="stats stats-home">
+                <div class="stat">
+                  <span class="stat-label">Rank</span>
+                  <span class="stat-val">{rankByName.get(g.home) ?? "—"}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">R/G</span>
+                  <span class="stat-val">{rpg(homeTeam)}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">RA/G</span>
+                  <span class="stat-val">{rapg(homeTeam)}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+        {/each}
       </div>
     {/if}
 
@@ -235,8 +343,13 @@
     display: flex;
     gap: 8px;
   }
+  .controls input[type="date"],
   .exp select {
-    min-width: 200px;
+    width: auto;
+    height: 38px;
+    padding: 0 0.6em;
+    box-sizing: border-box;
+    line-height: 36px;
   }
   .actions {
     display: flex;
@@ -248,31 +361,6 @@
     gap: 6px;
     margin: 14px 0 14px;
   }
-  .table-card {
-    padding: 6px 6px;
-  }
-  .matchup {
-    line-height: 1.25;
-    font-size: 0.95rem;
-  }
-  .matchup .at {
-    color: var(--ink-mute);
-    font-size: 0.8em;
-    margin: 1px 0;
-  }
-  .matchup .home {
-    font-weight: 600;
-  }
-  td.fav {
-    color: var(--good);
-    font-weight: 600;
-  }
-  td.strong {
-    font-weight: 600;
-  }
-  td.mono {
-    font-family: var(--mono);
-  }
   .err {
     border-color: var(--accent);
     background: var(--accent-soft);
@@ -280,7 +368,6 @@
   }
   .center {
     text-align: center;
-    padding: 40px 20px;
   }
   .empty {
     text-align: center;
@@ -304,5 +391,241 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  /* ── MATCHUP CARDS ─────────────────────────────────────── */
+  .matchup-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .matchup {
+    position: relative;
+    padding: 22px 26px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .dh-tag {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    border: 1px solid var(--line-soft);
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    gap: 18px 20px;
+    align-items: start;
+  }
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .side.away { align-items: flex-start; text-align: left; }
+  .side.home { align-items: flex-end; text-align: right; }
+  .tname {
+    font-family: var(--serif);
+    font-size: 1.5rem;
+    line-height: 1.15;
+    margin: 0;
+    color: var(--ink);
+  }
+  .role {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-mute);
+  }
+
+  /* CENTER COLUMN */
+  .center {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .probs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    align-items: end;
+  }
+  .prob {
+    font-size: 2rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-soft);
+    line-height: 1;
+  }
+  .prob:first-child { text-align: right; }
+  .prob:last-child { text-align: left; }
+  .prob.winner { color: var(--good); }
+
+  .bars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .bar {
+    height: 14px;
+    background: var(--bg-soft);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    position: relative;
+  }
+  .bar .fill {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    background: var(--bad);
+    transition: width 0.25s ease;
+  }
+  .bar.winner .fill { background: var(--good); }
+  .bar-away .fill {
+    margin-left: auto;
+  }
+
+  .winlabels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 2px;
+  }
+  .winlabel {
+    font-size: 0.82rem;
+    color: var(--ink-mute);
+    font-weight: 500;
+  }
+  .winlabels .winlabel:first-child { text-align: right; }
+  .winlabels .winlabel:last-child { text-align: left; }
+  .winlabel.winner {
+    color: var(--good);
+    font-weight: 600;
+  }
+
+  .proj {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
+    align-items: center;
+    padding: 14px 18px;
+    background: var(--bg-soft);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    margin-top: 10px;
+  }
+  .proj-num {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .proj-num:first-child { text-align: right; }
+  .proj-num:last-child { text-align: left; }
+  .proj-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    white-space: nowrap;
+  }
+
+  .odds {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
+    align-items: center;
+    margin-top: 6px;
+    font-size: 0.85rem;
+  }
+  .odds-val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-soft);
+  }
+  .odds-val:first-child { text-align: right; }
+  .odds-val:last-child { text-align: left; }
+  .odds-val.winner { color: var(--good); font-weight: 600; }
+  .odds-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+  }
+
+  /* STATS ROW (under each side) */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .stats-home { direction: rtl; }
+  .stats-home .stat { direction: ltr; }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stat-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+  }
+  .stat-val {
+    font-family: var(--mono);
+    font-size: 1rem;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .total-line {
+    display: flex;
+    justify-content: center;
+    align-items: baseline;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .total-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+  }
+  .total-val {
+    font-family: var(--mono);
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Two cards per row on wider screens */
+  @media (min-width: 900px) {
+    .matchup-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  /* Stack columns on narrow screens */
+  @media (max-width: 640px) {
+    .grid {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+    .side.home { align-items: flex-start; text-align: left; }
+    .stats-home { direction: ltr; }
   }
 </style>
