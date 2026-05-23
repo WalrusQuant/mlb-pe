@@ -1,0 +1,3 @@
+theme: jekyll-theme-cayman
+title: MLB Pythagorean Expectation
+description: A desktop app that predicts MLB games using Bill James' classic Pythagorean formula — and explains the math along the way.
