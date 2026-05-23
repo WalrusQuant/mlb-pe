@@ -1,6 +1,8 @@
 # MLB Pythagorean Expectation
 
-A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill James' Pythagorean Expectation (augmented with a starting-pitcher adjustment, home-field advantage, and a recent-form L20 blend), shows you the league standings, and teaches you how the math works.
+A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill James' Pythagorean Expectation (augmented with a starting-pitcher adjustment, home-field advantage, and a recent-form L20 blend), shows you the league standings, surfaces model-flavored team stats, and teaches you how the math works.
+
+![Predictions screen — a card per matchup with win-prob bars, projected runs, fair odds, starting pitcher, and L20 form per side](./docs/predictions.png)
 
 > Originally written in R. This repo contains both the original R scripts (in [`legacy/`](./legacy)) and the new Tauri rewrite.
 
@@ -8,6 +10,7 @@ A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill Ja
 
 - **Predictions** — every game on a given date as a self-contained card: away/home team names with their real (W-L) record, win-probability bars (green favored / red underdog), projected runs, fair American odds, season rank, R/G and RA/G per team, the announced starting pitcher with his season ERA, and each team's L20 (last-20-games) scoring line.
 - **Standings** — six division tables (AL East / Central / West, NL East / Central / West) plus a wild-card race section per league. Each row shows W · L · PCT · GB · L10 · Streak · Run Diff. Division leaders get a star; teams currently in wild-card position are subtly tinted.
+- **Stats** — model-flavored leaderboards you won't find on mlb.com: luck (actual W% vs Pythag W% — who's over- or under-performing their run differential), offense and defense rankings (OS / DS, league-relative), and hot/cold (biggest L20-vs-season net-runs swings). Every section makes an argument the raw box score doesn't.
 - **Learn** — an interactive walkthrough of the model: Pythagorean expectation, log5, OS/DS for predicted runs, fair-odds conversion, the pitcher adjustment, home-field advantage, and recent-form weighting. Each section has its own anchor in the left-side TOC.
 - **Playground** — a sortable table of all 30 teams (Rank · W% · R/G · RA/G · OS · DS) on the left; pick a Home and Away with one click, then tweak runs, games, the Pythagorean exponent, an optional Starter ERA / IP, and optional L20 RS/G + RA/G overrides on the right. Three toggles let you flip the pitcher adjustment, home-field advantage, and recent-form blend on/off live. The win-prob, predicted runs, fair odds, and a sensitivity chart update instantly.
 - Data is pulled directly from the public [MLB Stats API](https://statsapi.mlb.com). Schedule and standings cached for 10 minutes, pitcher stats for 1 hour.
@@ -51,6 +54,7 @@ src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (cards)
 │   ├── standings/+page.svelte      # Division standings + wild-card race
+│   ├── stats/+page.svelte          # Luck / OS+DS / hot+cold leaderboards
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
 │   └── playground/+page.svelte     # Team table + matchup editor
 └── lib/

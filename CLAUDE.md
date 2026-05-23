@@ -4,7 +4,7 @@ Project-specific guidance for Claude Code working on this repo. Read this first.
 
 ## What this is
 
-A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment, a home-field advantage shift, and a recent-form (L20) blend. Also has a Standings page and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
+A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment, a home-field advantage shift, and a recent-form (L20) blend. Also has a Standings page, a Stats page (model-flavored leaderboards: luck, OS/DS, hot/cold), and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
 
 Public MLB Stats API (`https://statsapi.mlb.com`) is the only data source. No auth, no rate limits in practice. Cached in-process for 10 minutes (schedule + standings) / 1 hour (pitcher stats).
 
@@ -21,6 +21,7 @@ src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (card-per-matchup)
 │   ├── standings/+page.svelte      # Division standings + wild-card race
+│   ├── stats/+page.svelte          # Model-flavored leaderboards (luck, OS/DS, hot/cold)
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
 │   └── playground/+page.svelte     # Team table + matchup editor
 └── lib/
