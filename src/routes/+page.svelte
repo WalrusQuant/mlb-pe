@@ -14,6 +14,7 @@
   let rankByName = $state<Map<string, number>>(new Map());
   let useOptimalExp = $state(true);
   let manualExp = $state(2.0);
+  let includePitchers = $state(true);
 
   async function load() {
     loading = true;
@@ -23,6 +24,7 @@
         getPredictions({
           date,
           exponent: useOptimalExp ? undefined : manualExp,
+          includePitchers,
         }),
         getTeamStats({ exponent: useOptimalExp ? undefined : manualExp }),
       ]);
@@ -154,6 +156,23 @@
         {/if}
       </div>
     </label>
+    <label class="pitcher-toggle">
+      <span class="lbl">
+        Pitcher
+        <InfoTip text="When on, each team's effective RA blends 60% starter ERA + 40% team RA/G (using the announced probable pitcher). Off = pure team-level Pythagorean." />
+      </span>
+      <button
+        class="toggle"
+        class:on={includePitchers}
+        role="switch"
+        aria-checked={includePitchers}
+        onclick={() => { includePitchers = !includePitchers; load(); }}
+      >
+        <span class="thumb"></span>
+        <span class="track-label on-label">On</span>
+        <span class="track-label off-label">Off</span>
+      </button>
+    </label>
     <div class="actions">
       <button class="ghost" onclick={refresh} disabled={refreshing || loading}>
         {refreshing ? "Refreshing…" : "Refresh data"}
@@ -217,6 +236,20 @@
               <div class="side away">
                 <h2 class="tname">{g.away}</h2>
                 <span class="role">Away</span>
+                {#if g.awayPitcher}
+                  <div class="pitcher" class:pitcher-faded={!g.awayPitcher.applied}>
+                    <span class="pname">{g.awayPitcher.name}</span>
+                    {#if g.awayPitcher.applied}
+                      <span class="pera">{g.awayPitcher.era.toFixed(2)} ERA · {g.awayPitcher.gamesStarted} GS</span>
+                    {:else}
+                      <span class="pera">small sample · using team RA</span>
+                    {/if}
+                  </div>
+                {:else}
+                  <div class="pitcher pitcher-tbd">
+                    <span class="pname">Starter TBD</span>
+                  </div>
+                {/if}
               </div>
 
               <!-- CENTER: probs, bars, projected runs -->
@@ -259,6 +292,20 @@
               <div class="side home">
                 <h2 class="tname">{g.home}</h2>
                 <span class="role">Home</span>
+                {#if g.homePitcher}
+                  <div class="pitcher" class:pitcher-faded={!g.homePitcher.applied}>
+                    <span class="pname">{g.homePitcher.name}</span>
+                    {#if g.homePitcher.applied}
+                      <span class="pera">{g.homePitcher.era.toFixed(2)} ERA · {g.homePitcher.gamesStarted} GS</span>
+                    {:else}
+                      <span class="pera">small sample · using team RA</span>
+                    {/if}
+                  </div>
+                {:else}
+                  <div class="pitcher pitcher-tbd">
+                    <span class="pname">Starter TBD</span>
+                  </div>
+                {/if}
               </div>
 
               <!-- AWAY stats (under left) -->
@@ -321,16 +368,78 @@
   }
   .controls {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto auto 1fr auto;
     gap: 16px 24px;
     align-items: end;
     margin-bottom: 20px;
+  }
+  @media (max-width: 900px) {
+    .controls {
+      grid-template-columns: auto auto auto;
+    }
   }
   @media (max-width: 700px) {
     .controls {
       grid-template-columns: 1fr;
     }
   }
+
+  /* Pitcher on/off toggle */
+  .pitcher-toggle {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .toggle {
+    position: relative;
+    width: 76px;
+    height: 32px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--bg-soft);
+    cursor: pointer;
+    padding: 0;
+    overflow: hidden;
+    font: inherit;
+    color: var(--ink-soft);
+  }
+  .toggle .thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--ink-mute);
+    transition: transform 0.18s ease, background 0.18s ease;
+  }
+  .toggle.on .thumb {
+    transform: translateX(44px);
+    background: var(--good);
+  }
+  .track-label {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+    transition: opacity 0.18s ease, color 0.18s ease;
+  }
+  .on-label {
+    left: 12px;
+    color: var(--good);
+    opacity: 0;
+  }
+  .off-label {
+    right: 12px;
+    color: var(--ink-mute);
+    opacity: 1;
+  }
+  .toggle.on .on-label { opacity: 1; }
+  .toggle.on .off-label { opacity: 0; }
   .lbl {
     display: block;
     font-size: 0.78rem;
@@ -444,6 +553,28 @@
     letter-spacing: 0.1em;
     color: var(--ink-mute);
   }
+
+  .pitcher {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-size: 0.82rem;
+    line-height: 1.25;
+  }
+  .pitcher .pname {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .pitcher .pera {
+    font-family: var(--mono);
+    color: var(--ink-mute);
+    font-size: 0.74rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .pitcher-faded .pname { color: var(--ink-soft); }
+  .pitcher-tbd .pname { color: var(--ink-mute); font-style: italic; }
+  .side.home .pitcher { align-items: flex-end; }
 
   /* CENTER COLUMN */
   .center {

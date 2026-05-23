@@ -10,10 +10,20 @@ export type Prediction = {
   totalRuns: number;
 };
 
+export type Pitcher = {
+  name: string;
+  era: number;
+  inningsPitched: number;
+  gamesStarted: number;
+  applied: boolean; // false when the pitcher's sample is too small (or stats missing) — model fell back to team RA
+};
+
 export type GameRow = {
   date: string;
   home: string;
   away: string;
+  homePitcher: Pitcher | null;
+  awayPitcher: Pitcher | null;
 } & Prediction;
 
 export type PredictionsBundle = {

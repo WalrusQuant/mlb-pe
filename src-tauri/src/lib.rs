@@ -12,13 +12,15 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use mlb_api::{fetch_schedule, Game};
+use mlb_api::{fetch_pitcher_stats, fetch_schedule, Game, PitcherStats};
 use model::{
-    compute_team_stats, estimate_game, optimize_exponent, prob_to_american_odds, pythag_win_pct,
-    GameRow, Prediction, TeamStats,
+    compute_team_stats, estimate_game, estimate_game_with_pitchers, optimize_exponent,
+    prob_to_american_odds, pythag_win_pct, GameRow, PitcherAdj, PitcherInfo, Prediction, TeamStats,
+    MIN_IP_FOR_ADJUSTMENT,
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
+const PITCHER_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour — ERA changes slowly
 
 pub struct AppState {
     cache: Mutex<Cache>,
@@ -28,6 +30,7 @@ pub struct AppState {
 struct Cache {
     schedule: Option<(i32, Vec<Game>, Instant)>,
     optimal_exp: HashMap<i32, f64>,
+    pitchers: HashMap<i32, (PitcherStats, Instant)>,
 }
 
 impl AppState {
@@ -72,6 +75,40 @@ impl AppState {
         cache.optimal_exp.insert(season, exp);
         exp
     }
+
+    // Look up pitcher stats from cache; fetch any missing IDs from the API.
+    async fn get_pitchers(
+        &self,
+        season: i32,
+        ids: &[i32],
+    ) -> Result<HashMap<i32, PitcherStats>, String> {
+        let mut found = HashMap::new();
+        let mut missing = Vec::new();
+        {
+            let cache = self.cache.lock().unwrap();
+            for id in ids {
+                if let Some((ps, t)) = cache.pitchers.get(id) {
+                    if t.elapsed() < PITCHER_CACHE_TTL {
+                        found.insert(*id, ps.clone());
+                        continue;
+                    }
+                }
+                missing.push(*id);
+            }
+        }
+        if !missing.is_empty() {
+            let fetched = fetch_pitcher_stats(season, &missing)
+                .await
+                .map_err(|e| e.to_string())?;
+            let now = Instant::now();
+            let mut cache = self.cache.lock().unwrap();
+            for (id, ps) in fetched.iter() {
+                cache.pitchers.insert(*id, (ps.clone(), now));
+            }
+            found.extend(fetched);
+        }
+        Ok(found)
+    }
 }
 
 #[derive(Serialize)]
@@ -93,8 +130,10 @@ async fn get_predictions(
     season: Option<i32>,
     date: Option<String>,
     exponent: Option<f64>,
+    include_pitchers: Option<bool>,
 ) -> Result<PredictionsBundle, String> {
     let season = season.unwrap_or_else(default_season);
+    let include_pitchers = include_pitchers.unwrap_or(true);
     let games = state.get_games(season, false).await?;
 
     let exp = match exponent {
@@ -108,6 +147,23 @@ async fn get_predictions(
 
     let target_date = date.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
 
+    // Collect every probable pitcher for the target date, fetch their stats once.
+    // When include_pitchers is false the user wants pure Pythagorean — skip the fetch entirely.
+    let pitchers: HashMap<i32, PitcherStats> = if include_pitchers {
+        let pitcher_ids: Vec<i32> = games
+            .iter()
+            .filter(|g| g.date == target_date)
+            .flat_map(|g| [g.home_pitcher_id, g.away_pitcher_id])
+            .flatten()
+            .collect();
+        let mut unique_ids = pitcher_ids.clone();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+        state.get_pitchers(season, &unique_ids).await.unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
     let mut rows = Vec::new();
     let mut skipped = Vec::new();
     for g in games.iter().filter(|g| g.date == target_date) {
@@ -115,11 +171,42 @@ async fn get_predictions(
         let away = team_by_id.get(&g.away_team_id);
         match (home, away) {
             (Some(h), Some(a)) => {
-                let pred = estimate_game(h, a, lg_avg_runs);
+                let home_p_adj = g
+                    .home_pitcher_id
+                    .and_then(|id| pitchers.get(&id))
+                    .map(|p| PitcherAdj {
+                        era: p.era,
+                        innings_pitched: p.innings_pitched,
+                    });
+                let away_p_adj = g
+                    .away_pitcher_id
+                    .and_then(|id| pitchers.get(&id))
+                    .map(|p| PitcherAdj {
+                        era: p.era,
+                        innings_pitched: p.innings_pitched,
+                    });
+                let pred = estimate_game_with_pitchers(
+                    h,
+                    a,
+                    lg_avg_runs,
+                    home_p_adj,
+                    away_p_adj,
+                    exp,
+                );
+                let (home_pinfo, away_pinfo) = if include_pitchers {
+                    (
+                        pitcher_info(g.home_pitcher_id, g.home_pitcher_name.as_deref(), &pitchers),
+                        pitcher_info(g.away_pitcher_id, g.away_pitcher_name.as_deref(), &pitchers),
+                    )
+                } else {
+                    (None, None)
+                };
                 rows.push(GameRow {
                     date: g.date.clone(),
                     home: g.home_team_name.clone(),
                     away: g.away_team_name.clone(),
+                    home_pitcher: home_pinfo,
+                    away_pitcher: away_pinfo,
                     pred,
                 });
             }
@@ -270,6 +357,33 @@ fn default_season() -> i32 {
 fn round_to(x: f64, places: u32) -> f64 {
     let m = 10f64.powi(places as i32);
     (x * m).round() / m
+}
+
+// Build a PitcherInfo row for the UI. Falls back to a TBD-style entry when the
+// pitcher is announced but we have no season stats yet (rare early-season case).
+fn pitcher_info(
+    id: Option<i32>,
+    name: Option<&str>,
+    pitchers: &HashMap<i32, PitcherStats>,
+) -> Option<PitcherInfo> {
+    let id = id?;
+    let name = name.unwrap_or("Unknown").to_string();
+    match pitchers.get(&id) {
+        Some(ps) => Some(PitcherInfo {
+            name,
+            era: round_to(ps.era, 2),
+            innings_pitched: round_to(ps.innings_pitched, 1),
+            games_started: ps.games_started,
+            applied: ps.innings_pitched >= MIN_IP_FOR_ADJUSTMENT,
+        }),
+        None => Some(PitcherInfo {
+            name,
+            era: 0.0,
+            innings_pitched: 0.0,
+            games_started: 0,
+            applied: false,
+        }),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

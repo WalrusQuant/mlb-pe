@@ -9,6 +9,7 @@
     { id: "odds", label: "5 · Fair odds" },
     { id: "example", label: "6 · Worked example" },
     { id: "limits", label: "7 · What it doesn't do" },
+    { id: "pitcher", label: "8 · The pitcher adjustment" },
   ];
 </script>
 
@@ -180,6 +181,62 @@
     <p>
       Despite all of that, the Pythagorean baseline is famously hard to beat. It's the floor every more complex MLB
       prediction model has to clear, and it's the right starting point to build intuition.
+    </p>
+  </section>
+
+  <section id="pitcher">
+    <h2>8 · The pitcher adjustment</h2>
+    <p>
+      Pure Pythagorean expectation is blind to who's on the mound. A team's RA/G is the
+      <em>average</em> across every starter they've used — but tonight, one specific arm is throwing.
+      That's usually the single biggest per-game factor the base model misses.
+    </p>
+    <p>
+      We fix it by replacing each team's effective runs-allowed rate for the matchup with a blend:
+    </p>
+
+    <Formula label="Effective RA for tonight's matchup">
+      <em>RA<sub>eff</sub></em>/G  =  <em>w</em> · <em>pitcher</em><sub>ERA</sub>
+      +  (1 − <em>w</em>) · <em>team</em><sub>RA/G</sub>
+    </Formula>
+
+    <p>
+      Where <em>w</em> = <strong>0.6</strong>. The starter pitches roughly 5.4 of 9 innings on
+      average — about 60% of the game — so they're responsible for ~60% of the runs allowed.
+      The remaining 40% is the bullpen and the rest of the team's defense, which is implicitly
+      captured by the team's season RA/G.
+    </p>
+
+    <p>
+      Once we have <em>RA<sub>eff</sub></em>, we re-run the Pythagorean math with the team's
+      <em>unchanged</em> RS/G (offense isn't affected by who's pitching for them) and this game-specific
+      effective RA. The new standalone win % flows into log5 as before, and the
+      run-prediction math uses the matchup-specific DS so an ace suppresses the opposing
+      offense's expected runs.
+    </p>
+
+    <p class="subtle">
+      <strong>Sample-size guardrail:</strong> if the listed starter has fewer than <span class="mono">20</span>
+      innings on the season, we ignore their ERA and fall back to pure team RA. A spot starter
+      with 4 IP and an 18.00 ERA shouldn't crater their team's prediction.
+    </p>
+
+    <p class="subtle">
+      <strong>When the starter is TBD:</strong> many teams don't announce until game day. For
+      those games we skip the adjustment entirely — the prediction is pure team-level Pythagorean,
+      same as before. You'll see <em>"Starter TBD"</em> on the matchup card.
+    </p>
+
+    <p>
+      In the <a href="/playground">Playground</a>, each side now has optional Starter ERA / IP
+      inputs so you can answer questions like <em>"what if the Dodgers throw their #5 instead of their ace?"</em>
+      Leave the fields blank for no adjustment.
+    </p>
+
+    <p class="subtle">
+      <strong>What we're not modeling:</strong> a starter's recent form (last 5 starts vs. season),
+      FIP instead of ERA (FIP is often more predictive in small samples), home/road pitcher splits,
+      handedness vs. lineup. All defensible future additions.
     </p>
   </section>
 

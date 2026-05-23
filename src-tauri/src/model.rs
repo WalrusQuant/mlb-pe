@@ -32,10 +32,26 @@ pub struct Prediction {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PitcherInfo {
+    pub name: String,
+    pub era: f64,
+    pub innings_pitched: f64,
+    pub games_started: i32,
+    // Whether this pitcher's stats are large enough to be applied
+    // (vs. fall back to team RA). Mirrors MIN_IP_FOR_ADJUSTMENT.
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct GameRow {
     pub date: String,
     pub home: String,
     pub away: String,
+    #[serde(rename = "homePitcher")]
+    pub home_pitcher: Option<PitcherInfo>,
+    #[serde(rename = "awayPitcher")]
+    pub away_pitcher: Option<PitcherInfo>,
     #[serde(flatten)]
     pub pred: Prediction,
 }
@@ -125,10 +141,78 @@ pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64
 }
 
 pub fn estimate_game(home: &TeamStats, away: &TeamStats, lg_avg_runs: f64) -> Prediction {
-    let home_pred = home.os * away.ds * lg_avg_runs;
-    let away_pred = away.os * home.ds * lg_avg_runs;
+    estimate_game_with_pitchers(home, away, lg_avg_runs, None, None, 2.0)
+}
+
+// Per Bill James / sabermetrics consensus: a starting pitcher is responsible for ~5.4
+// of 9 innings on average (~0.6 of the game's runs allowed). The remainder is the
+// bullpen, which is implicitly captured in the team's season RA/G.
+pub const STARTER_SHARE: f64 = 0.6;
+// Below this, the pitcher sample is too small to trust — fall back to team RA.
+pub const MIN_IP_FOR_ADJUSTMENT: f64 = 20.0;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PitcherAdj {
+    pub era: f64,
+    pub innings_pitched: f64,
+}
+
+// Blend the team's season RA/G with the starter's ERA. The starter accounts for
+// STARTER_SHARE of the runs allowed; the remainder is the team's season-average
+// defense (which already includes bullpen + average starter pool).
+//
+// If the pitcher's sample is below MIN_IP_FOR_ADJUSTMENT we fall back to the team
+// RA — a tiny sample with an extreme ERA shouldn't crater a prediction.
+fn effective_ra_per_game(team: &TeamStats, pitcher: Option<PitcherAdj>) -> f64 {
+    let team_ra_pg = if team.games_played > 0 {
+        team.runs_allowed as f64 / team.games_played as f64
+    } else {
+        4.5
+    };
+    match pitcher {
+        Some(p) if p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT => {
+            STARTER_SHARE * p.era + (1.0 - STARTER_SHARE) * team_ra_pg
+        }
+        _ => team_ra_pg,
+    }
+}
+
+pub fn estimate_game_with_pitchers(
+    home: &TeamStats,
+    away: &TeamStats,
+    lg_avg_runs: f64,
+    home_pitcher: Option<PitcherAdj>,
+    away_pitcher: Option<PitcherAdj>,
+    exponent: f64,
+) -> Prediction {
+    // Team RS/G is fixed (offense doesn't change night-to-night), but RA/G shifts
+    // toward the starting pitcher's ERA.
+    let home_rs_pg = if home.games_played > 0 {
+        home.runs_scored as f64 / home.games_played as f64
+    } else {
+        4.5
+    };
+    let away_rs_pg = if away.games_played > 0 {
+        away.runs_scored as f64 / away.games_played as f64
+    } else {
+        4.5
+    };
+    let home_ra_eff = effective_ra_per_game(home, home_pitcher);
+    let away_ra_eff = effective_ra_per_game(away, away_pitcher);
+
+    // Recompute team Pythagorean win % using the matchup-specific RA.
+    let home_pyt = pythag_win_pct(home_rs_pg, home_ra_eff, exponent);
+    let away_pyt = pythag_win_pct(away_rs_pg, away_ra_eff, exponent);
+
+    // Predicted runs: keep OS unchanged (offense is offense), but recompute DS
+    // from the effective RA so an ace suppresses opposing runs.
+    let home_ds_eff = home_ra_eff / lg_avg_runs;
+    let away_ds_eff = away_ra_eff / lg_avg_runs;
+    let home_pred = home.os * away_ds_eff * lg_avg_runs;
+    let away_pred = away.os * home_ds_eff * lg_avg_runs;
     let total = home_pred + away_pred;
-    let home_win = log5(home.pythag_win_pct, away.pythag_win_pct);
+
+    let home_win = log5(home_pyt, away_pyt);
     let away_win = 1.0 - home_win;
     Prediction {
         home_win_prob: round_to(home_win, 4),

@@ -1,8 +1,10 @@
 // End-to-end smoke test: hits the live MLB API and runs the model.
 // Run with:  cargo run --example smoke
 
-use mlbpe_lib::mlb_api::fetch_schedule;
-use mlbpe_lib::model::{compute_team_stats, estimate_game, optimize_exponent};
+use mlbpe_lib::mlb_api::{fetch_pitcher_stats, fetch_schedule};
+use mlbpe_lib::model::{
+    compute_team_stats, estimate_game, estimate_game_with_pitchers, optimize_exponent, PitcherAdj,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,40 +39,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let today_games: Vec<_> = games.iter().filter(|g| g.date == target).collect();
     eprintln!("\nGames on {}: {}", target, today_games.len());
 
-    // Verify JSON shape — first game's serialized form is what the frontend sees.
-    if let Some(g) = today_games.first() {
-        if let (Some(h), Some(a)) = (by_id.get(&g.home_team_id), by_id.get(&g.away_team_id)) {
-            let p = estimate_game(h, a, lg_avg);
-            let row = mlbpe_lib::model::GameRow {
-                date: g.date.clone(),
-                home: g.home_team_name.clone(),
-                away: g.away_team_name.clone(),
-                pred: p,
-            };
-            eprintln!(
-                "\nSample serialized GameRow:\n{}\n",
-                serde_json::to_string_pretty(&row)?
-            );
-        }
-    }
+    // Fetch probable pitcher stats for today's games.
+    let pitcher_ids: Vec<i32> = today_games
+        .iter()
+        .flat_map(|g| [g.home_pitcher_id, g.away_pitcher_id])
+        .flatten()
+        .collect();
+    let mut unique_ids = pitcher_ids.clone();
+    unique_ids.sort_unstable();
+    unique_ids.dedup();
+    eprintln!("Fetching stats for {} probable pitcher(s)...", unique_ids.len());
+    let pitchers = fetch_pitcher_stats(season, &unique_ids).await.unwrap_or_default();
 
     for g in &today_games {
         let home = by_id.get(&g.home_team_id);
         let away = by_id.get(&g.away_team_id);
         match (home, away) {
             (Some(h), Some(a)) => {
-                let p = estimate_game(h, a, lg_avg);
+                let home_p = g
+                    .home_pitcher_id
+                    .and_then(|id| pitchers.get(&id))
+                    .map(|p| PitcherAdj { era: p.era, innings_pitched: p.innings_pitched });
+                let away_p = g
+                    .away_pitcher_id
+                    .and_then(|id| pitchers.get(&id))
+                    .map(|p| PitcherAdj { era: p.era, innings_pitched: p.innings_pitched });
+                let base = estimate_game(h, a, lg_avg);
+                let p = estimate_game_with_pitchers(h, a, lg_avg, home_p, away_p, exp);
+                let hp_str = g
+                    .home_pitcher_name
+                    .as_deref()
+                    .map(|n| {
+                        let era = g
+                            .home_pitcher_id
+                            .and_then(|id| pitchers.get(&id))
+                            .map(|x| format!("{:.2}", x.era))
+                            .unwrap_or_else(|| "—".into());
+                        format!("{} ({})", n, era)
+                    })
+                    .unwrap_or_else(|| "TBD".into());
+                let ap_str = g
+                    .away_pitcher_name
+                    .as_deref()
+                    .map(|n| {
+                        let era = g
+                            .away_pitcher_id
+                            .and_then(|id| pitchers.get(&id))
+                            .map(|x| format!("{:.2}", x.era))
+                            .unwrap_or_else(|| "—".into());
+                        format!("{} ({})", n, era)
+                    })
+                    .unwrap_or_else(|| "TBD".into());
                 println!(
-                    "{:>22} @ {:<22}  home {:.2} ({:+}) | away {:.2} ({:+}) | {:.1}–{:.1} (tot {:.1})",
+                    "{:>22} @ {:<22}  base {:.2} → adj {:.2}  Δ {:+.2}  | {} vs {}",
                     g.away_team_name,
                     g.home_team_name,
+                    base.home_win_prob,
                     p.home_win_prob,
-                    p.home_fair_odds,
-                    p.away_win_prob,
-                    p.away_fair_odds,
-                    p.home_pred_runs,
-                    p.away_pred_runs,
-                    p.total_runs,
+                    p.home_win_prob - base.home_win_prob,
+                    ap_str,
+                    hp_str,
                 );
             }
             _ => {

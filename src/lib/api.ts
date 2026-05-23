@@ -10,6 +10,7 @@ export async function getPredictions(opts: {
   season?: number;
   date?: string;
   exponent?: number;
+  includePitchers?: boolean;
 } = {}): Promise<PredictionsBundle> {
   return await invoke<PredictionsBundle>("get_predictions", opts);
 }

@@ -21,6 +21,26 @@
   let awayRA = $state(510);
   let awayG = $state(99);
   let exponent = $state(1.83);
+  // Optional starting-pitcher overrides. null = no adjustment (pure pythag).
+  let homePitcherERA = $state<number | null>(null);
+  let homePitcherIP = $state<number | null>(null);
+  let awayPitcherERA = $state<number | null>(null);
+  let awayPitcherIP = $state<number | null>(null);
+  // Master toggle: when off, pitcher inputs are kept but ignored by the math.
+  let applyPitchers = $state(true);
+
+  // Mirrors src-tauri/src/model.rs constants.
+  const STARTER_SHARE = 0.6;
+  const MIN_IP_FOR_ADJUSTMENT = 20;
+
+  function effectiveRA(rs: number, ra: number, g: number, pERA: number | null, pIP: number | null): number {
+    const teamRAG = g > 0 ? ra / g : 4.5;
+    if (!applyPitchers) return teamRAG;
+    if (pERA !== null && pIP !== null && pIP >= MIN_IP_FOR_ADJUSTMENT) {
+      return STARTER_SHARE * pERA + (1 - STARTER_SHARE) * teamRAG;
+    }
+    return teamRAG;
+  }
 
   // Sort state for left team table
   type SortKey = "rank" | "team" | "wpct" | "rpg" | "rapg" | "os" | "ds";
@@ -46,14 +66,22 @@
   }
 
   let result = $derived.by(() => {
-    const pHome = pythag(homeRS, homeRA, exponent);
-    const pAway = pythag(awayRS, awayRA, exponent);
+    // Per-game rates. RS/G is unchanged by pitcher (offense), but RA/G blends with the starter.
+    const homeRSG = homeG > 0 ? homeRS / homeG : 4.5;
+    const awayRSG = awayG > 0 ? awayRS / awayG : 4.5;
+    const homeRAEff = effectiveRA(homeRS, homeRA, homeG, homePitcherERA, homePitcherIP);
+    const awayRAEff = effectiveRA(awayRS, awayRA, awayG, awayPitcherERA, awayPitcherIP);
+
+    // Pythag uses per-game rates; the exponent is the same as game-totals form (scale-invariant).
+    const pHome = pythag(homeRSG, homeRAEff, exponent);
+    const pAway = pythag(awayRSG, awayRAEff, exponent);
     const homeWin = log5(pHome, pAway);
     const awayWin = 1 - homeWin;
-    const osH = homeG > 0 ? homeRS / homeG / leagueAvgRuns : 0;
-    const dsH = homeG > 0 ? homeRA / homeG / leagueAvgRuns : 0;
-    const osA = awayG > 0 ? awayRS / awayG / leagueAvgRuns : 0;
-    const dsA = awayG > 0 ? awayRA / awayG / leagueAvgRuns : 0;
+
+    const osH = homeRSG / leagueAvgRuns;
+    const dsH = homeRAEff / leagueAvgRuns;
+    const osA = awayRSG / leagueAvgRuns;
+    const dsA = awayRAEff / leagueAvgRuns;
     const eHome = osH * dsA * leagueAvgRuns;
     const eAway = osA * dsH * leagueAvgRuns;
     return {
@@ -62,6 +90,7 @@
       awayFairOdds: americanOdds(awayWin),
       eHome, eAway, total: eHome + eAway,
       osH, dsH, osA, dsA,
+      homeRAEff, awayRAEff,
     };
   });
 
@@ -70,10 +99,14 @@
     const steps = 80;
     const min = 0.5;
     const max = 4.0;
+    const homeRSG = homeG > 0 ? homeRS / homeG : 4.5;
+    const awayRSG = awayG > 0 ? awayRS / awayG : 4.5;
+    const homeRAEff = effectiveRA(homeRS, homeRA, homeG, homePitcherERA, homePitcherIP);
+    const awayRAEff = effectiveRA(awayRS, awayRA, awayG, awayPitcherERA, awayPitcherIP);
     for (let i = 0; i < steps; i++) {
       const e = min + ((max - min) * i) / (steps - 1);
-      const ph = pythag(homeRS, homeRA, e);
-      const pa = pythag(awayRS, awayRA, e);
+      const ph = pythag(homeRSG, homeRAEff, e);
+      const pa = pythag(awayRSG, awayRAEff, e);
       points.push({ x: e, y: log5(ph, pa) });
     }
     return { points, min, max };
@@ -332,6 +365,26 @@
             </div>
           </div>
 
+          <div class="apply-row">
+            <label class="apply-toggle">
+              <span class="lbl">
+                Apply Pitcher Adjustment
+                <InfoTip text="Off = pure Pythagorean from RS/RA. On = blend 60% starter ERA + 40% team RA/G for each side (when ERA + IP are set and IP ≥ 20)." />
+              </span>
+              <button
+                class="toggle"
+                class:on={applyPitchers}
+                role="switch"
+                aria-checked={applyPitchers}
+                onclick={() => applyPitchers = !applyPitchers}
+              >
+                <span class="thumb"></span>
+                <span class="track-label on-label">On</span>
+                <span class="track-label off-label">Off</span>
+              </button>
+            </label>
+          </div>
+
           <div class="sides">
             <!-- AWAY editable -->
             <div class="side">
@@ -353,10 +406,32 @@
                   <input type="number" min="1" bind:value={awayG} />
                 </label>
               </div>
+              <div class="pitcher-row">
+                <span class="lbl">
+                  Starter
+                  <InfoTip text="Optional. If set, the team's effective RA blends 60% starter ERA + 40% team RA/G. Needs IP ≥ 20 to apply." />
+                </span>
+                <div class="pitcher-fields">
+                  <label>
+                    <span>ERA</span>
+                    <input type="number" min="0" step="0.01" placeholder="—"
+                      bind:value={awayPitcherERA} />
+                  </label>
+                  <label>
+                    <span>IP</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={awayPitcherIP} />
+                  </label>
+                  <button class="ghost small" onclick={() => { awayPitcherERA = null; awayPitcherIP = null; }}>
+                    Clear
+                  </button>
+                </div>
+              </div>
               <p class="readouts mono">
                 Pythag W%: <strong>{fmtPct(result.pAway, 1)}</strong>
                 &nbsp;·&nbsp; OS: {result.osA.toFixed(2)}
                 &nbsp;·&nbsp; DS: {result.dsA.toFixed(2)}
+                &nbsp;·&nbsp; eff RA: {result.awayRAEff.toFixed(2)}
               </p>
             </div>
 
@@ -380,10 +455,32 @@
                   <input type="number" min="1" bind:value={homeG} />
                 </label>
               </div>
+              <div class="pitcher-row">
+                <span class="lbl">
+                  Starter
+                  <InfoTip text="Optional. If set, the team's effective RA blends 60% starter ERA + 40% team RA/G. Needs IP ≥ 20 to apply." />
+                </span>
+                <div class="pitcher-fields">
+                  <label>
+                    <span>ERA</span>
+                    <input type="number" min="0" step="0.01" placeholder="—"
+                      bind:value={homePitcherERA} />
+                  </label>
+                  <label>
+                    <span>IP</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={homePitcherIP} />
+                  </label>
+                  <button class="ghost small" onclick={() => { homePitcherERA = null; homePitcherIP = null; }}>
+                    Clear
+                  </button>
+                </div>
+              </div>
               <p class="readouts mono">
                 Pythag W%: <strong>{fmtPct(result.pHome, 1)}</strong>
                 &nbsp;·&nbsp; OS: {result.osH.toFixed(2)}
                 &nbsp;·&nbsp; DS: {result.dsH.toFixed(2)}
+                &nbsp;·&nbsp; eff RA: {result.homeRAEff.toFixed(2)}
               </p>
             </div>
           </div>
@@ -722,6 +819,94 @@
     color: var(--ink-soft);
     font-size: 0.8rem;
     margin: 4px 0 0;
+  }
+  .apply-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .apply-toggle {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .toggle {
+    position: relative;
+    width: 76px;
+    height: 32px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--bg-soft);
+    cursor: pointer;
+    padding: 0;
+    overflow: hidden;
+    font: inherit;
+    color: var(--ink-soft);
+  }
+  .toggle .thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--ink-mute);
+    transition: transform 0.18s ease, background 0.18s ease;
+  }
+  .toggle.on .thumb {
+    transform: translateX(44px);
+    background: var(--good);
+  }
+  .track-label {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+  }
+  .on-label {
+    left: 12px;
+    color: var(--good);
+    opacity: 0;
+  }
+  .off-label {
+    right: 12px;
+    color: var(--ink-mute);
+    opacity: 1;
+  }
+  .toggle.on .on-label { opacity: 1; }
+  .toggle.on .off-label { opacity: 0; }
+
+  .pitcher-row {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--line-soft);
+  }
+  .pitcher-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 8px;
+    align-items: end;
+    margin-top: 4px;
+  }
+  .pitcher-fields label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    min-width: 0;
+  }
+  .pitcher-fields input {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
   }
   .small {
     font-size: 0.82rem;
