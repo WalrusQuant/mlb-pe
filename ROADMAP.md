@@ -6,6 +6,8 @@ Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered lo
 
 - ✅ **#1 Starting pitcher adjustment** — blends starter ERA with team RA/G (`w = 0.6`, fallback under 20 IP). Toggle to disable. Pitcher info shown on every Predictions card. Learn page section 8.
 - ✅ **#2 Standings page** — six division tables + wild-card race per league using the `/standings` endpoint. Real (W-L) records now plumbed into Predictions cards.
+- ✅ **#5a Home-field advantage** — log-odds shift of 0.1603 (= logit(0.54) − logit(0.50)) applied to home win probability. Shrinks at the extremes. Toggle on Predictions + Playground. Learn page section 9. Park factors (the other half of original #5) still TBD.
+- ✅ **#7 Recent form weighting** — `RS/G` and `RA/G` blended 60% season + 40% L20. Aggregates completed games from the cached schedule (no extra API call). Toggle on Predictions + Playground. L20 line shown on every card. Learn page section 10.
 
 ## Remaining
 
@@ -65,15 +67,14 @@ Today's games with running scores, current inning, base/out state.
 
 ---
 
-## 5. Park factors + home-field edge
+## 5. Park factors (home-field shipped ✅)
 
-Two small constants that fix two real model blind spots.
+The home-field half of this item is shipped (see Done section). The park-factor half is still open:
 
 - **Park factors:** Coors Field inflates run totals; Petco suppresses them. Multiply predicted runs by the park's multi-year run multiplier (these are well-known constants, no API needed).
-- **Home-field edge:** MLB home teams win ~54% historically. Apply a small bump to home W% post-log5.
 
-**Impact:** small but real. Tightens prediction accuracy by maybe 1-2%.
-**Effort:** small. Constants + a couple of lines in the model.
+**Impact:** small but real. Tightens run-total accuracy by maybe 1-2%, less effect on win probability.
+**Effort:** small. Constants table keyed by venue ID + a couple of lines in the runs-predicted math.
 
 ---
 
@@ -89,16 +90,9 @@ A view that flags games where the model is most opinionated — and games where 
 
 ---
 
-## 7. Recent form weighting
+## 7. Recent form weighting ✅
 
-Pythagorean weights April and September equally. A team's last 20 games is often more predictive than their full-season number.
-
-- Compute a `pythag_l20` alongside `pythag_full`.
-- Blend them (e.g. 60% full season, 40% L20) for the prediction.
-- Expose both in the Playground so the user can see the difference.
-
-**Impact:** small-to-medium. Helps with hot/cold streaks; hurts when teams are in genuine transition (injuries, trades).
-**Effort:** medium. Needs game-by-game team aggregation, not just season totals.
+**Shipped.** Each team's RS/G and RA/G are blended 60% season + 40% last-20-completed-games, with a fallback to pure season when fewer than 10 completed games exist. Aggregated from the already-cached schedule (no extra API call). Predictions cards show an L20 line beneath each pitcher. Toggle on Predictions and Playground. Learn page section 10.
 
 ---
 
@@ -126,7 +120,9 @@ A team with a gassed pen is a worse late-game bet than their season RA suggests.
 
 1. ✅ **Starting pitcher adjustment** — biggest model lift.
 2. ✅ **Standings** — adds breadth, unblocks real W-L on Predictions cards.
-3. **Live scoreboard** — *next.* Connective tissue between predictions and reality; pairs with the Predictions cards we already have. Immediate visual payoff, no new persistence layer.
-4. **Model performance tracker** — proves the work is sound; valuable but has a cold-start problem (need weeks of logged predictions before the UI is interesting).
-5. **Park factors + home-field edge** — small polish on the model.
-6. Everything else as appetite allows.
+3. ✅ **Home-field advantage** — small but real model fix.
+4. ✅ **Recent form weighting** — captures hot/cold streaks the season aggregate smooths out.
+5. **Live scoreboard** — *next.* Connective tissue between predictions and reality; pairs with the Predictions cards we already have. Immediate visual payoff, no new persistence layer.
+6. **Model performance tracker** — proves the work is sound; valuable but has a cold-start problem (need weeks of logged predictions before the UI is interesting).
+7. **Park factors** — small polish on the run-totals math; no API call needed.
+8. Everything else as appetite allows.

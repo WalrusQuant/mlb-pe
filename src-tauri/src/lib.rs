@@ -14,9 +14,10 @@ use tauri::State;
 
 use mlb_api::{fetch_pitcher_stats, fetch_schedule, fetch_standings, Game, PitcherStats, TeamStanding};
 use model::{
-    compute_team_stats, estimate_game, estimate_game_with_pitchers, optimize_exponent,
-    prob_to_american_odds, pythag_win_pct, round_to, GameRow, PitcherAdj, PitcherInfo, Prediction,
-    TeamStats, MIN_IP_FOR_ADJUSTMENT,
+    compute_recent_form, compute_team_stats, estimate_game, estimate_game_with_pitchers,
+    optimize_exponent, prob_to_american_odds, pythag_win_pct, round_to, GameRow, PitcherAdj,
+    PitcherInfo, Prediction, RecentForm, RecentInfo, TeamStats, MIN_IP_FOR_ADJUSTMENT,
+    MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -167,10 +168,12 @@ async fn get_predictions(
     exponent: Option<f64>,
     include_pitchers: Option<bool>,
     include_home_field: Option<bool>,
+    include_recent_form: Option<bool>,
 ) -> Result<PredictionsBundle, String> {
     let season = season.unwrap_or_else(default_season);
     let include_pitchers = include_pitchers.unwrap_or(true);
     let include_home_field = include_home_field.unwrap_or(true);
+    let include_recent_form = include_recent_form.unwrap_or(true);
     let games = state.get_games(season, false).await?;
 
     let exp = match exponent {
@@ -181,6 +184,10 @@ async fn get_predictions(
     let (team_stats, lg_avg_runs) = compute_team_stats(&games, exp);
     let team_by_id: HashMap<i32, &TeamStats> =
         team_stats.iter().map(|t| (t.team_id, t)).collect();
+
+    // Always compute recent-form so we can DISPLAY the L20 line on every card.
+    // The include_recent_form toggle gates whether it enters the model math.
+    let recent_by_id = compute_recent_form(&games, RECENT_FORM_WINDOW);
 
     let target_date = date.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
 
@@ -235,12 +242,19 @@ async fn get_predictions(
                 } else {
                     None
                 };
+                let home_recent_raw = recent_by_id.get(&g.home_team_id).copied();
+                let away_recent_raw = recent_by_id.get(&g.away_team_id).copied();
+                let home_recent_adj = if include_recent_form { home_recent_raw } else { None };
+                let away_recent_adj = if include_recent_form { away_recent_raw } else { None };
+
                 let pred = estimate_game_with_pitchers(
                     h,
                     a,
                     lg_avg_runs,
                     home_p_adj,
                     away_p_adj,
+                    home_recent_adj,
+                    away_recent_adj,
                     exp,
                     include_home_field,
                 );
@@ -258,12 +272,16 @@ async fn get_predictions(
                     &pitchers,
                     include_pitchers,
                 );
+                let home_rinfo = recent_info(home_recent_raw, include_recent_form);
+                let away_rinfo = recent_info(away_recent_raw, include_recent_form);
                 rows.push(GameRow {
                     date: g.date.clone(),
                     home: g.home_team_name.clone(),
                     away: g.away_team_name.clone(),
                     home_pitcher: home_pinfo,
                     away_pitcher: away_pinfo,
+                    home_recent: home_rinfo,
+                    away_recent: away_rinfo,
                     pred,
                 });
             }
@@ -464,6 +482,20 @@ fn pitcher_info(
             eligible_sample: false,
         }),
     }
+}
+
+// Mirror of pitcher_info for the L20 line. Always returned when we have any
+// completed games for the team; `applied` reflects toggle + sample threshold.
+fn recent_info(recent: Option<RecentForm>, model_enabled: bool) -> Option<RecentInfo> {
+    let r = recent?;
+    let eligible = r.games >= MIN_RECENT_GAMES;
+    Some(RecentInfo {
+        games: r.games,
+        rs_per_game: round_to(r.rs_per_game, 2),
+        ra_per_game: round_to(r.ra_per_game, 2),
+        applied: model_enabled && eligible,
+        eligible_sample: eligible,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

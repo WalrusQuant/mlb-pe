@@ -23,12 +23,25 @@ export type Pitcher = {
   eligibleSample: boolean;
 };
 
+export type Recent = {
+  games: number;
+  rsPerGame: number;
+  raPerGame: number;
+  // True when the L20 sample actually shifted the prediction.
+  // False if the user turned the toggle off OR games < MIN_RECENT_GAMES.
+  applied: boolean;
+  // True when the L20 sample meets the backend's MIN_RECENT_GAMES threshold.
+  eligibleSample: boolean;
+};
+
 export type GameRow = {
   date: string;
   home: string;
   away: string;
   homePitcher: Pitcher | null;
   awayPitcher: Pitcher | null;
+  homeRecent: Recent | null;
+  awayRecent: Recent | null;
 } & Prediction;
 
 export type PredictionsBundle = {

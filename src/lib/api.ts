@@ -13,6 +13,7 @@ export async function getPredictions(opts: {
   exponent?: number;
   includePitchers?: boolean;
   includeHomeField?: boolean;
+  includeRecentForm?: boolean;
 } = {}): Promise<PredictionsBundle> {
   return await invoke<PredictionsBundle>("get_predictions", opts);
 }

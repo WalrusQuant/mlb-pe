@@ -17,6 +17,7 @@
   let manualExp = $state(2.0);
   let includePitchers = $state(true);
   let includeHomeField = $state(true);
+  let includeRecentForm = $state(true);
 
   async function load() {
     loading = true;
@@ -28,6 +29,7 @@
           exponent: useOptimalExp ? undefined : manualExp,
           includePitchers,
           includeHomeField,
+          includeRecentForm,
         }),
         getTeamStats({ exponent: useOptimalExp ? undefined : manualExp }),
         getStandings(),
@@ -207,6 +209,23 @@
         <span class="track-label off-label">Off</span>
       </button>
     </label>
+    <label class="pitcher-toggle">
+      <span class="lbl">
+        Recent Form
+        <InfoTip text="When on, each team's RS/G and RA/G are blended 60% season + 40% last-20-games. Captures hot/cold streaks without throwing away the full-season sample. Off = pure season totals." />
+      </span>
+      <button
+        class="toggle"
+        class:on={includeRecentForm}
+        role="switch"
+        aria-checked={includeRecentForm}
+        onclick={() => { includeRecentForm = !includeRecentForm; load(); }}
+      >
+        <span class="thumb"></span>
+        <span class="track-label on-label">On</span>
+        <span class="track-label off-label">Off</span>
+      </button>
+    </label>
     <div class="actions">
       <button class="ghost" onclick={refresh} disabled={refreshing || loading}>
         {refreshing ? "Refreshing…" : "Refresh data"}
@@ -292,6 +311,16 @@
                     <span class="pname">Starter TBD</span>
                   </div>
                 {/if}
+                {#if g.awayRecent}
+                  <div class="recent" class:pitcher-faded={!g.awayRecent.applied}>
+                    <span class="pera">
+                      L{g.awayRecent.games}: {g.awayRecent.rsPerGame.toFixed(1)} R/G · {g.awayRecent.raPerGame.toFixed(1)} RA/G
+                      {#if !g.awayRecent.eligibleSample}
+                        <span class="pnote">(small sample)</span>
+                      {/if}
+                    </span>
+                  </div>
+                {/if}
               </div>
 
               <!-- CENTER: probs, bars, projected runs -->
@@ -356,6 +385,16 @@
                     <span class="pname">Starter TBD</span>
                   </div>
                 {/if}
+                {#if g.homeRecent}
+                  <div class="recent" class:pitcher-faded={!g.homeRecent.applied}>
+                    <span class="pera">
+                      L{g.homeRecent.games}: {g.homeRecent.rsPerGame.toFixed(1)} R/G · {g.homeRecent.raPerGame.toFixed(1)} RA/G
+                      {#if !g.homeRecent.eligibleSample}
+                        <span class="pnote">(small sample)</span>
+                      {/if}
+                    </span>
+                  </div>
+                {/if}
               </div>
 
               <!-- AWAY stats (under left) -->
@@ -418,14 +457,14 @@
   }
   .controls {
     display: grid;
-    grid-template-columns: auto auto auto 1fr auto;
+    grid-template-columns: auto auto auto auto 1fr auto;
     gap: 16px 24px;
     align-items: end;
     margin-bottom: 20px;
   }
   @media (max-width: 1100px) {
     .controls {
-      grid-template-columns: auto auto auto auto;
+      grid-template-columns: auto auto auto auto auto;
     }
   }
   @media (max-width: 700px) {
@@ -637,6 +676,18 @@
     opacity: 0.75;
   }
   .side.home .pitcher { align-items: flex-end; }
+
+  .recent {
+    margin-top: 4px;
+    font-size: 0.74rem;
+    line-height: 1.25;
+  }
+  .recent .pera {
+    font-family: var(--mono);
+    color: var(--ink-mute);
+    font-variant-numeric: tabular-nums;
+  }
+  .side.home .recent { text-align: right; }
 
   /* CENTER COLUMN */
   .center {

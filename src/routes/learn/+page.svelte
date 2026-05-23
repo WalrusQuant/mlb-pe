@@ -11,6 +11,7 @@
     { id: "limits", label: "7 · What it doesn't do" },
     { id: "pitcher", label: "8 · The pitcher adjustment" },
     { id: "homefield", label: "9 · Home-field advantage" },
+    { id: "recent", label: "10 · Recent form weighting" },
   ];
 </script>
 
@@ -175,10 +176,12 @@
     <ul>
       <li>It doesn't know <strong>who's pitching</strong>. The 2025 ace vs. a spot starter is invisible to season-long aggregates.</li>
       <li>It doesn't know <strong>injuries, rest, or lineups</strong> — just team totals to date.</li>
-      <li>It treats home/away as equivalent — there's a real but small home-field edge in MLB (~54%) we don't model.</li>
-      <li>It weights April and September equally — no recency weighting. Hot/cold streaks are smoothed out.</li>
       <li>It assumes no <strong>park factors</strong> — Coors Field and Petco are the same to the model.</li>
     </ul>
+    <p class="subtle">
+      Sections 8, 9, and 10 cover the three optional adjustments we layer on top of the base model
+      to address most of the gaps above: the starting pitcher, home-field advantage, and recent form.
+    </p>
     <p>
       Despite all of that, the Pythagorean baseline is famously hard to beat. It's the floor every more complex MLB
       prediction model has to clear, and it's the right starting point to build intuition.
@@ -295,6 +298,61 @@
       home-field effect uniformly. Some parks are tougher to play in than others (think Coors's altitude,
       Fenway's wall, Tropicana's lighting) but we don't differentiate. A per-park multiplier would be a
       reasonable v2.
+    </p>
+  </section>
+
+  <section id="recent">
+    <h2>10 · Recent form weighting</h2>
+    <p>
+      Pythagorean is happy to tell you that the team that won 12 of its last 14 games is no
+      better than its full-season totals say it is — which is, on average, true. But it's not
+      <em>always</em> true. A team in genuine ascent (rookies clicking, a returned-from-IL ace,
+      a new manager) or in real decline (deadline sell-off, key injuries) tells a story April–September
+      blurs out. Recent form is how we let the past few weeks tip the scale a little.
+    </p>
+
+    <p>
+      Each team's effective per-game scoring and prevention rates become weighted averages of the
+      season total and the team's <strong>last 20 completed games</strong>:
+    </p>
+
+    <Formula label="Recent-form blend (per team, per side)">
+      <em>RS/G<sub>eff</sub></em>  =  0.4 · <em>RS/G<sub>L20</sub></em>
+      +  0.6 · <em>RS/G<sub>season</sub></em>
+      <br />
+      <em>RA/G<sub>eff</sub></em>  =  0.4 · <em>RA/G<sub>L20</sub></em>
+      +  0.6 · <em>RA/G<sub>season</sub></em>
+    </Formula>
+
+    <p>
+      A 60/40 season-heavy split keeps the larger sample doing most of the work — the full-season
+      number is still the gravitational center — but it lets the L20 line nudge the prediction by a
+      visible amount when a team is running noticeably hot or cold. The blended rates feed into
+      the Pythagorean math <em>before</em> the pitcher adjustment runs, so the starter ERA is
+      blending against the recency-aware team baseline, not the bare season number.
+    </p>
+
+    <p class="subtle">
+      <strong>Sample-size guardrail:</strong> if a team has fewer than <span class="mono">10</span>
+      completed games (early season, an expansion-team scenario, etc.) we ignore the L20 line
+      and use pure season rates. Same idea as the 20-IP guardrail on starters — a 5-game sample
+      shouldn't swing a prediction by 40%.
+    </p>
+
+    <p>
+      Each game card on the <a href="/">Predictions</a> page shows the L20 line beneath the
+      starting pitcher: <span class="mono">L20: 5.1 R/G · 3.8 RA/G</span>. When you flip the
+      <em>Recent Form</em> toggle off, the line stays visible (so you can see <em>what</em> the
+      model is no longer using) but its influence on the win % drops to zero.
+    </p>
+
+    <p class="subtle">
+      <strong>What this captures and what it doesn't:</strong> the L20 window is a blunt instrument.
+      It doesn't distinguish a real talent shift (a healthy ace coming back) from a noisy run
+      against weak opponents. Stronger versions would weight games by opponent quality, decay weights
+      smoothly over time, or detect the moment a team's underlying talent actually changed. For an
+      app whose whole appeal is intelligible math, a flat 60/40 blend with a fixed window felt like
+      the right place to stop.
     </p>
   </section>
 

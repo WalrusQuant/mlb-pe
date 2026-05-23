@@ -3,7 +3,8 @@
 
 use mlbpe_lib::mlb_api::{fetch_pitcher_stats, fetch_schedule};
 use mlbpe_lib::model::{
-    compute_team_stats, estimate_game, estimate_game_with_pitchers, optimize_exponent, PitcherAdj,
+    compute_recent_form, compute_team_stats, estimate_game, estimate_game_with_pitchers,
+    optimize_exponent, PitcherAdj, RECENT_FORM_WINDOW,
 };
 
 #[tokio::main]
@@ -51,6 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Fetching stats for {} probable pitcher(s)...", unique_ids.len());
     let pitchers = fetch_pitcher_stats(season, &unique_ids).await.unwrap_or_default();
 
+    let recent = compute_recent_form(&games, RECENT_FORM_WINDOW);
+
     for g in &today_games {
         let home = by_id.get(&g.home_team_id);
         let away = by_id.get(&g.away_team_id);
@@ -64,8 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .away_pitcher_id
                     .and_then(|id| pitchers.get(&id))
                     .map(|p| PitcherAdj { era: p.era, innings_pitched: p.innings_pitched });
+                let home_r = recent.get(&g.home_team_id).copied();
+                let away_r = recent.get(&g.away_team_id).copied();
                 let base = estimate_game(h, a, lg_avg);
-                let p = estimate_game_with_pitchers(h, a, lg_avg, home_p, away_p, exp, true);
+                let p = estimate_game_with_pitchers(
+                    h, a, lg_avg, home_p, away_p, home_r, away_r, exp, true,
+                );
                 let hp_str = g
                     .home_pitcher_name
                     .as_deref()

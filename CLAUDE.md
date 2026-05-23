@@ -4,7 +4,7 @@ Project-specific guidance for Claude Code working on this repo. Read this first.
 
 ## What this is
 
-A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment and a home-field advantage shift. Also has a Standings page and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
+A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment, a home-field advantage shift, and a recent-form (L20) blend. Also has a Standings page and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
 
 Public MLB Stats API (`https://statsapi.mlb.com`) is the only data source. No auth, no rate limits in practice. Cached in-process for 10 minutes (schedule + standings) / 1 hour (pitcher stats).
 
@@ -36,17 +36,20 @@ Backend → frontend bridge: Tauri's `invoke()`. Every Rust struct that crosses 
 For each matchup:
 
 1. Team Pythagorean W% = RS^x / (RS^x + RA^x), with `x` fit by golden-section search to minimize MSE against this season's actual W-L (typically ~1.6–1.9).
-2. **Pitcher adjustment** (when toggle is on and probable pitcher announced):
-   `effective_RA/G = 0.6 · starter_ERA + 0.4 · team_RA/G`
-   Below `MIN_IP = 20` innings, fall back to pure team RA.
-3. Matchup win prob via log5.
-4. **Home-field advantage** (when toggle is on): shift home win in *log-odds space* by `HOME_FIELD_LOG_ODDS = 0.1603` (= logit(0.54) − logit(0.50)). This bumps a 50/50 game to ~54% but shrinks at the extremes (a 90% favorite gains < 2 pts). Helper: `shift_log_odds(p, delta)` in `model.rs`.
-5. Predicted runs = OS × DS_effective × league-avg (HFA does NOT affect run totals).
-6. Fair American odds from the home-field-adjusted win prob.
+2. **Recent-form blend** (when toggle is on, team has ≥ `MIN_RECENT_GAMES = 10` completed games):
+   `RS/G_eff = 0.4 · RS/G_L20 + 0.6 · RS/G_season` (same blend for RA/G).
+   Computed by `compute_recent_form(&games, RECENT_FORM_WINDOW)` in `model.rs`. The recency-blended RA/G is what the pitcher adjustment then operates on — order matters.
+3. **Pitcher adjustment** (when toggle is on and probable pitcher announced):
+   `effective_RA/G = 0.6 · starter_ERA + 0.4 · (recency-blended) team_RA/G`
+   Below `MIN_IP = 20` innings, fall back to the team RA/G (already L20-blended if step 2 ran).
+4. Matchup win prob via log5 over the per-team Pythag computed from the blended rates.
+5. **Home-field advantage** (when toggle is on): shift home win in *log-odds space* by `HOME_FIELD_LOG_ODDS = 0.1603` (= logit(0.54) − logit(0.50)). This bumps a 50/50 game to ~54% but shrinks at the extremes (a 90% favorite gains < 2 pts). Helper: `shift_log_odds(p, delta)` in `model.rs`.
+6. Predicted runs = OS_eff × DS_eff × league-avg (HFA does NOT affect run totals). OS_eff uses the L20-blended RS/G.
+7. Fair American odds from the home-field-adjusted win prob.
 
-Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`, `HOME_FIELD_LOG_ODDS = 0.1603`.
+Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`, `HOME_FIELD_LOG_ODDS = 0.1603`, `RECENT_FORM_WINDOW = 20`, `RECENT_FORM_WEIGHT = 0.4`, `MIN_RECENT_GAMES = 10`.
 
-Both toggles live on the Predictions page (apply server-side via `get_predictions` params `includePitchers` / `includeHomeField`) AND on the Playground page (apply client-side via mirrored JS math — keep the Rust and JS implementations in sync).
+All three toggles live on the Predictions page (apply server-side via `get_predictions` params `includePitchers` / `includeHomeField` / `includeRecentForm`) AND on the Playground page (apply client-side via mirrored JS math — keep the Rust and JS implementations in sync).
 
 ## Conventions
 
@@ -97,7 +100,7 @@ The smoke test is the fastest way to validate backend changes against real data 
 
 ## Roadmap
 
-[`ROADMAP.md`](./ROADMAP.md) tracks the broader feature list. Done: **pitcher adjustment**, **standings**, **home-field advantage**. Remaining: live scoreboard, model performance tracker, park factors, recent-form weighting, head-to-head history, edge/value finder, bullpen quality.
+[`ROADMAP.md`](./ROADMAP.md) tracks the broader feature list. Done: **pitcher adjustment**, **standings**, **home-field advantage**, **recent-form weighting**. Remaining: live scoreboard, model performance tracker, park factors, head-to-head history, edge/value finder, bullpen quality.
 
 ## Memory
 

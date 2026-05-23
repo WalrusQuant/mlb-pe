@@ -26,15 +26,21 @@
   let homePitcherIP = $state<number | null>(null);
   let awayPitcherERA = $state<number | null>(null);
   let awayPitcherIP = $state<number | null>(null);
-  // Master toggle: when off, pitcher inputs are kept but ignored by the math.
+  // Optional L20 (or any "recent") rate overrides. null = no blend.
+  let homeRecentRSG = $state<number | null>(null);
+  let homeRecentRAG = $state<number | null>(null);
+  let awayRecentRSG = $state<number | null>(null);
+  let awayRecentRAG = $state<number | null>(null);
+  // Master toggles: when off, the corresponding inputs are kept but ignored.
   let applyPitchers = $state(true);
-  // Home-field advantage toggle.
   let applyHomeField = $state(true);
+  let applyRecentForm = $state(true);
 
   // Mirrors src-tauri/src/model.rs constants.
   const STARTER_SHARE = 0.6;
   const MIN_IP_FOR_ADJUSTMENT = 20;
   const HOME_FIELD_LOG_ODDS = 0.1603;
+  const RECENT_FORM_WEIGHT = 0.4;
 
   function shiftLogOdds(p: number, delta: number): number {
     const clamped = Math.max(1e-9, Math.min(1 - 1e-9, p));
@@ -42,8 +48,14 @@
     return 1 / (1 + Math.exp(-lo));
   }
 
-  function effectiveRA(rs: number, ra: number, g: number, pERA: number | null, pIP: number | null): number {
-    const teamRAG = g > 0 ? ra / g : 4.5;
+  // Mirror of model.rs::blend — falls back to seasonRate if the user hasn't
+  // supplied a recent rate or the toggle is off.
+  function blendRate(seasonRate: number, recentRate: number | null): number {
+    if (!applyRecentForm || recentRate === null || recentRate <= 0) return seasonRate;
+    return RECENT_FORM_WEIGHT * recentRate + (1 - RECENT_FORM_WEIGHT) * seasonRate;
+  }
+
+  function applyPitcher(teamRAG: number, pERA: number | null, pIP: number | null): number {
     if (!applyPitchers) return teamRAG;
     if (pERA !== null && pIP !== null && pIP >= MIN_IP_FOR_ADJUSTMENT) {
       return STARTER_SHARE * pERA + (1 - STARTER_SHARE) * teamRAG;
@@ -74,12 +86,25 @@
       : Math.round(((1 - p) * 100) / p);
   }
 
+  // Per-game rates: optionally blended with the L20 override, then RA/G
+  // optionally adjusted toward the starter ERA. Same composition order as the
+  // Rust pipeline so the playground stays a faithful mirror of the model.
+  let rates = $derived.by(() => {
+    const homeSeasonRSG = homeG > 0 ? homeRS / homeG : 4.5;
+    const awaySeasonRSG = awayG > 0 ? awayRS / awayG : 4.5;
+    const homeSeasonRAG = homeG > 0 ? homeRA / homeG : 4.5;
+    const awaySeasonRAG = awayG > 0 ? awayRA / awayG : 4.5;
+    const homeRSG = blendRate(homeSeasonRSG, homeRecentRSG);
+    const awayRSG = blendRate(awaySeasonRSG, awayRecentRSG);
+    const homeRAGBlended = blendRate(homeSeasonRAG, homeRecentRAG);
+    const awayRAGBlended = blendRate(awaySeasonRAG, awayRecentRAG);
+    const homeRAEff = applyPitcher(homeRAGBlended, homePitcherERA, homePitcherIP);
+    const awayRAEff = applyPitcher(awayRAGBlended, awayPitcherERA, awayPitcherIP);
+    return { homeRSG, awayRSG, homeRAEff, awayRAEff };
+  });
+
   let result = $derived.by(() => {
-    // Per-game rates. RS/G is unchanged by pitcher (offense), but RA/G blends with the starter.
-    const homeRSG = homeG > 0 ? homeRS / homeG : 4.5;
-    const awayRSG = awayG > 0 ? awayRS / awayG : 4.5;
-    const homeRAEff = effectiveRA(homeRS, homeRA, homeG, homePitcherERA, homePitcherIP);
-    const awayRAEff = effectiveRA(awayRS, awayRA, awayG, awayPitcherERA, awayPitcherIP);
+    const { homeRSG, awayRSG, homeRAEff, awayRAEff } = rates;
 
     // Pythag uses per-game rates; the exponent is the same as game-totals form (scale-invariant).
     const pHome = pythag(homeRSG, homeRAEff, exponent);
@@ -111,10 +136,7 @@
     const steps = 80;
     const min = 0.5;
     const max = 4.0;
-    const homeRSG = homeG > 0 ? homeRS / homeG : 4.5;
-    const awayRSG = awayG > 0 ? awayRS / awayG : 4.5;
-    const homeRAEff = effectiveRA(homeRS, homeRA, homeG, homePitcherERA, homePitcherIP);
-    const awayRAEff = effectiveRA(awayRS, awayRA, awayG, awayPitcherERA, awayPitcherIP);
+    const { homeRSG, awayRSG, homeRAEff, awayRAEff } = rates;
     for (let i = 0; i < steps; i++) {
       const e = min + ((max - min) * i) / (steps - 1);
       const ph = pythag(homeRSG, homeRAEff, e);
@@ -414,6 +436,23 @@
                 <span class="track-label off-label">Off</span>
               </button>
             </label>
+            <label class="apply-toggle">
+              <span class="lbl">
+                Apply Recent Form
+                <InfoTip text="When on, each team's RS/G and RA/G are blended 60% season + 40% with the L20 rates you enter below. Off (or empty L20 fields) = pure season." />
+              </span>
+              <button
+                class="toggle"
+                class:on={applyRecentForm}
+                role="switch"
+                aria-checked={applyRecentForm}
+                onclick={() => applyRecentForm = !applyRecentForm}
+              >
+                <span class="thumb"></span>
+                <span class="track-label on-label">On</span>
+                <span class="track-label off-label">Off</span>
+              </button>
+            </label>
           </div>
 
           <div class="sides">
@@ -454,6 +493,27 @@
                       bind:value={awayPitcherIP} />
                   </label>
                   <button class="ghost small" onclick={() => { awayPitcherERA = null; awayPitcherIP = null; }}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div class="pitcher-row">
+                <span class="lbl">
+                  Recent Form (L20)
+                  <InfoTip text="Optional. If set, blends 60% season + 40% these L20 rates. Leave blank to use season only." />
+                </span>
+                <div class="pitcher-fields">
+                  <label>
+                    <span>RS/G</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={awayRecentRSG} />
+                  </label>
+                  <label>
+                    <span>RA/G</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={awayRecentRAG} />
+                  </label>
+                  <button class="ghost small" onclick={() => { awayRecentRSG = null; awayRecentRAG = null; }}>
                     Clear
                   </button>
                 </div>
@@ -503,6 +563,27 @@
                       bind:value={homePitcherIP} />
                   </label>
                   <button class="ghost small" onclick={() => { homePitcherERA = null; homePitcherIP = null; }}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div class="pitcher-row">
+                <span class="lbl">
+                  Recent Form (L20)
+                  <InfoTip text="Optional. If set, blends 60% season + 40% these L20 rates. Leave blank to use season only." />
+                </span>
+                <div class="pitcher-fields">
+                  <label>
+                    <span>RS/G</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={homeRecentRSG} />
+                  </label>
+                  <label>
+                    <span>RA/G</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={homeRecentRAG} />
+                  </label>
+                  <button class="ghost small" onclick={() => { homeRecentRSG = null; homeRecentRAG = null; }}>
                     Clear
                   </button>
                 </div>

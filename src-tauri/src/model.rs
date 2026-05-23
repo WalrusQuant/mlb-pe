@@ -47,6 +47,18 @@ pub struct PitcherInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentInfo {
+    pub games: i32,
+    pub rs_per_game: f64,
+    pub ra_per_game: f64,
+    // True when the L20 sample actually shifted the prediction.
+    // False if the toggle is off OR games < MIN_RECENT_GAMES.
+    pub applied: bool,
+    pub eligible_sample: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct GameRow {
     pub date: String,
     pub home: String,
@@ -55,6 +67,10 @@ pub struct GameRow {
     pub home_pitcher: Option<PitcherInfo>,
     #[serde(rename = "awayPitcher")]
     pub away_pitcher: Option<PitcherInfo>,
+    #[serde(rename = "homeRecent")]
+    pub home_recent: Option<RecentInfo>,
+    #[serde(rename = "awayRecent")]
+    pub away_recent: Option<RecentInfo>,
     #[serde(flatten)]
     pub pred: Prediction,
 }
@@ -144,7 +160,7 @@ pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64
 }
 
 pub fn estimate_game(home: &TeamStats, away: &TeamStats, lg_avg_runs: f64) -> Prediction {
-    estimate_game_with_pitchers(home, away, lg_avg_runs, None, None, 2.0, false)
+    estimate_game_with_pitchers(home, away, lg_avg_runs, None, None, None, None, 2.0, false)
 }
 
 // Per Bill James / sabermetrics consensus: a starting pitcher is responsible for ~5.4
@@ -161,6 +177,17 @@ pub const MIN_IP_FOR_ADJUSTMENT: f64 = 20.0;
 // the extremes — a 90% favorite gets a smaller bump than a coin-flip game.
 pub const HOME_FIELD_LOG_ODDS: f64 = 0.1603;
 
+// Recent-form weighting: how many of a team's most recent completed games to
+// pull into the blend, and how much weight to give them vs. the full season.
+// Pythagorean weights April and September equally — a 60/40 season-heavy blend
+// nudges the prediction toward how the team is *currently* playing without
+// throwing away the larger sample.
+pub const RECENT_FORM_WINDOW: usize = 20;
+pub const RECENT_FORM_WEIGHT: f64 = 0.4;
+// Below this many recent games we don't trust the L20 sample (early season,
+// just back from a long break, etc.) — fall back to pure season stats.
+pub const MIN_RECENT_GAMES: i32 = 10;
+
 // Shift a win probability by a log-odds delta.
 pub fn shift_log_odds(p: f64, delta: f64) -> f64 {
     // Clamp away from {0, 1} to avoid infinities. In practice log5 never returns
@@ -176,18 +203,86 @@ pub struct PitcherAdj {
     pub innings_pitched: f64,
 }
 
-// Blend the team's season RA/G with the starter's ERA. The starter accounts for
-// STARTER_SHARE of the runs allowed; the remainder is the team's season-average
-// defense (which already includes bullpen + average starter pool).
-//
-// If the pitcher's sample is below MIN_IP_FOR_ADJUSTMENT we fall back to the team
-// RA — a tiny sample with an extreme ERA shouldn't crater a prediction.
-fn effective_ra_per_game(team: &TeamStats, pitcher: Option<PitcherAdj>) -> f64 {
-    let team_ra_pg = if team.games_played > 0 {
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentForm {
+    pub games: i32,
+    pub rs_per_game: f64,
+    pub ra_per_game: f64,
+}
+
+// Aggregate each team's last N completed games into a RecentForm row.
+// Iterates the schedule once in date order, then trims per team. Returns a
+// map keyed by team_id so the predictions loop can look up O(1).
+pub fn compute_recent_form(games: &[Game], window: usize) -> HashMap<i32, RecentForm> {
+    let mut by_team: HashMap<i32, Vec<(String, i64, i64)>> = HashMap::new();
+    for g in games.iter().filter(|g| g.is_final()) {
+        let hr = g.home_runs.unwrap() as i64;
+        let ar = g.away_runs.unwrap() as i64;
+        by_team
+            .entry(g.home_team_id)
+            .or_default()
+            .push((g.date.clone(), hr, ar));
+        by_team
+            .entry(g.away_team_id)
+            .or_default()
+            .push((g.date.clone(), ar, hr));
+    }
+    let mut out = HashMap::new();
+    for (team_id, mut rows) in by_team {
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let take = rows.len().saturating_sub(window);
+        let slice = &rows[take..];
+        let games_n = slice.len() as i32;
+        if games_n == 0 {
+            continue;
+        }
+        let rs: i64 = slice.iter().map(|(_, rs, _)| rs).sum();
+        let ra: i64 = slice.iter().map(|(_, _, ra)| ra).sum();
+        out.insert(
+            team_id,
+            RecentForm {
+                games: games_n,
+                rs_per_game: rs as f64 / games_n as f64,
+                ra_per_game: ra as f64 / games_n as f64,
+            },
+        );
+    }
+    out
+}
+
+// Blend a season-level per-game rate with the L20 rate. If the recent sample
+// is missing or too small (early season), fall back to the season number.
+fn blend(season_per_g: f64, recent: Option<(f64, i32)>, weight: f64) -> f64 {
+    match recent {
+        Some((rate, n)) if n >= MIN_RECENT_GAMES => weight * rate + (1.0 - weight) * season_per_g,
+        _ => season_per_g,
+    }
+}
+
+fn season_rs_pg(team: &TeamStats) -> f64 {
+    if team.games_played > 0 {
+        team.runs_scored as f64 / team.games_played as f64
+    } else {
+        4.5
+    }
+}
+
+fn season_ra_pg(team: &TeamStats) -> f64 {
+    if team.games_played > 0 {
         team.runs_allowed as f64 / team.games_played as f64
     } else {
         4.5
-    };
+    }
+}
+
+// Blend the team's (possibly recent-form-adjusted) RA/G with the starter's ERA.
+// The starter accounts for STARTER_SHARE of the runs allowed; the remainder is
+// the team's average defense (bullpen + average starter pool).
+//
+// If the pitcher's sample is below MIN_IP_FOR_ADJUSTMENT we fall back to the
+// team RA — a tiny sample with an extreme ERA shouldn't crater a prediction.
+fn apply_pitcher(team_ra_pg: f64, pitcher: Option<PitcherAdj>) -> f64 {
     match pitcher {
         Some(p) if p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT => {
             STARTER_SHARE * p.era + (1.0 - STARTER_SHARE) * team_ra_pg
@@ -202,34 +297,58 @@ pub fn estimate_game_with_pitchers(
     lg_avg_runs: f64,
     home_pitcher: Option<PitcherAdj>,
     away_pitcher: Option<PitcherAdj>,
+    home_recent: Option<RecentForm>,
+    away_recent: Option<RecentForm>,
     exponent: f64,
     apply_home_field: bool,
 ) -> Prediction {
-    // Team RS/G is fixed (offense doesn't change night-to-night), but RA/G shifts
-    // toward the starting pitcher's ERA.
-    let home_rs_pg = if home.games_played > 0 {
-        home.runs_scored as f64 / home.games_played as f64
-    } else {
-        4.5
-    };
-    let away_rs_pg = if away.games_played > 0 {
-        away.runs_scored as f64 / away.games_played as f64
-    } else {
-        4.5
-    };
-    let home_ra_eff = effective_ra_per_game(home, home_pitcher);
-    let away_ra_eff = effective_ra_per_game(away, away_pitcher);
+    // Season-level RS/G and team RA/G. Each may be blended with the team's L20
+    // form (if a RecentForm is provided AND the sample meets MIN_RECENT_GAMES).
+    let home_season_rs_pg = season_rs_pg(home);
+    let away_season_rs_pg = season_rs_pg(away);
+    let home_season_ra_pg = season_ra_pg(home);
+    let away_season_ra_pg = season_ra_pg(away);
 
-    // Recompute team Pythagorean win % using the matchup-specific RA.
+    let home_rs_pg = blend(
+        home_season_rs_pg,
+        home_recent.map(|r| (r.rs_per_game, r.games)),
+        RECENT_FORM_WEIGHT,
+    );
+    let away_rs_pg = blend(
+        away_season_rs_pg,
+        away_recent.map(|r| (r.rs_per_game, r.games)),
+        RECENT_FORM_WEIGHT,
+    );
+    let home_ra_team = blend(
+        home_season_ra_pg,
+        home_recent.map(|r| (r.ra_per_game, r.games)),
+        RECENT_FORM_WEIGHT,
+    );
+    let away_ra_team = blend(
+        away_season_ra_pg,
+        away_recent.map(|r| (r.ra_per_game, r.games)),
+        RECENT_FORM_WEIGHT,
+    );
+
+    // Pitcher adjustment blends the starter ERA into the (possibly L20-blended)
+    // team RA/G — recent form shifts the team baseline, the starter then shifts
+    // the matchup-specific RA off that baseline.
+    let home_ra_eff = apply_pitcher(home_ra_team, home_pitcher);
+    let away_ra_eff = apply_pitcher(away_ra_team, away_pitcher);
+
+    // Recompute team Pythagorean win % using the matchup-specific RS/RA.
     let home_pyt = pythag_win_pct(home_rs_pg, home_ra_eff, exponent);
     let away_pyt = pythag_win_pct(away_rs_pg, away_ra_eff, exponent);
 
-    // Predicted runs: keep OS unchanged (offense is offense), but recompute DS
-    // from the effective RA so an ace suppresses opposing runs.
+    // Predicted runs: derive OS from the (possibly blended) RS/G and DS from
+    // the effective RA. When no recent form / pitcher is supplied this collapses
+    // back to the original season-level OS · DS · lg_avg_runs.
+    let home_os_eff = home_rs_pg / lg_avg_runs;
+    let away_os_eff = away_rs_pg / lg_avg_runs;
     let home_ds_eff = home_ra_eff / lg_avg_runs;
     let away_ds_eff = away_ra_eff / lg_avg_runs;
-    let home_pred = home.os * away_ds_eff * lg_avg_runs;
-    let away_pred = away.os * home_ds_eff * lg_avg_runs;
+    let home_pred = home_os_eff * away_ds_eff * lg_avg_runs;
+    let away_pred = away_os_eff * home_ds_eff * lg_avg_runs;
     let total = home_pred + away_pred;
 
     let neutral_home_win = log5(home_pyt, away_pyt);
@@ -411,5 +530,43 @@ mod tests {
         // A 10% dog likewise — bumped, but not by 4 absolute points
         let adj_low = shift_log_odds(0.1, HOME_FIELD_LOG_ODDS);
         assert!(adj_low > 0.1 && adj_low < 0.12);
+    }
+
+    #[test]
+    fn recent_form_blend_is_weighted_combination() {
+        // 60/40 season-heavy: season 4.0, recent 6.0 → 0.6*4 + 0.4*6 = 4.8
+        let b = blend(4.0, Some((6.0, 20)), RECENT_FORM_WEIGHT);
+        assert!((b - 4.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn recent_form_falls_back_below_min_games() {
+        // Sample too small → just return the season value
+        let b = blend(4.0, Some((6.0, 5)), RECENT_FORM_WEIGHT);
+        assert!((b - 4.0).abs() < 1e-9);
+        // None → also fall back
+        let b2 = blend(4.0, None, RECENT_FORM_WEIGHT);
+        assert!((b2 - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn recent_form_shifts_prediction_toward_hot_team() {
+        let home = TeamStats {
+            team_id: 1, team: "H".into(), runs_scored: 400, runs_allowed: 400,
+            games_played: 100, pythag_win_pct: 0.5, os: 1.0, ds: 1.0,
+        };
+        let away = TeamStats {
+            team_id: 2, team: "A".into(), runs_scored: 400, runs_allowed: 400,
+            games_played: 100, pythag_win_pct: 0.5, os: 1.0, ds: 1.0,
+        };
+        // No recent form → 50/50.
+        let neutral = estimate_game_with_pitchers(&home, &away, 4.0, None, None, None, None, 2.0, false);
+        assert!((neutral.home_win_prob - 0.5).abs() < 1e-9);
+
+        // Home is scorching, away is cold → home should be a clear favorite.
+        let home_hot = Some(RecentForm { games: 20, rs_per_game: 6.0, ra_per_game: 3.0 });
+        let away_cold = Some(RecentForm { games: 20, rs_per_game: 3.0, ra_per_game: 6.0 });
+        let hot = estimate_game_with_pitchers(&home, &away, 4.0, None, None, home_hot, away_cold, 2.0, false);
+        assert!(hot.home_win_prob > 0.6, "expected home > 0.6, got {}", hot.home_win_prob);
     }
 }
