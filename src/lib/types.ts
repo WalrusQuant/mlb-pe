@@ -15,7 +15,12 @@ export type Pitcher = {
   era: number;
   inningsPitched: number;
   gamesStarted: number;
-  applied: boolean; // false when the pitcher's sample is too small (or stats missing) — model fell back to team RA
+  // True when this pitcher's stats actually shifted the prediction.
+  // False if the user turned the toggle off OR the sample was too small.
+  applied: boolean;
+  // True when IP meets the backend's MIN_IP_FOR_ADJUSTMENT threshold.
+  // Lets the UI show "(small sample)" without hard-coding the threshold.
+  eligibleSample: boolean;
 };
 
 export type GameRow = {

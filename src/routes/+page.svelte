@@ -239,10 +239,15 @@
                 {#if g.awayPitcher}
                   <div class="pitcher" class:pitcher-faded={!g.awayPitcher.applied}>
                     <span class="pname">{g.awayPitcher.name}</span>
-                    {#if g.awayPitcher.applied}
-                      <span class="pera">{g.awayPitcher.era.toFixed(2)} ERA · {g.awayPitcher.gamesStarted} GS</span>
+                    {#if g.awayPitcher.inningsPitched > 0}
+                      <span class="pera">
+                        {g.awayPitcher.era.toFixed(2)} ERA · {g.awayPitcher.gamesStarted} GS
+                        {#if !g.awayPitcher.eligibleSample}
+                          <span class="pnote">(small sample)</span>
+                        {/if}
+                      </span>
                     {:else}
-                      <span class="pera">small sample · using team RA</span>
+                      <span class="pera pnote">no season data yet</span>
                     {/if}
                   </div>
                 {:else}
@@ -295,10 +300,15 @@
                 {#if g.homePitcher}
                   <div class="pitcher" class:pitcher-faded={!g.homePitcher.applied}>
                     <span class="pname">{g.homePitcher.name}</span>
-                    {#if g.homePitcher.applied}
-                      <span class="pera">{g.homePitcher.era.toFixed(2)} ERA · {g.homePitcher.gamesStarted} GS</span>
+                    {#if g.homePitcher.inningsPitched > 0}
+                      <span class="pera">
+                        {g.homePitcher.era.toFixed(2)} ERA · {g.homePitcher.gamesStarted} GS
+                        {#if !g.homePitcher.eligibleSample}
+                          <span class="pnote">(small sample)</span>
+                        {/if}
+                      </span>
                     {:else}
-                      <span class="pera">small sample · using team RA</span>
+                      <span class="pera pnote">no season data yet</span>
                     {/if}
                   </div>
                 {:else}
@@ -572,8 +582,13 @@
     font-size: 0.74rem;
     font-variant-numeric: tabular-nums;
   }
-  .pitcher-faded .pname { color: var(--ink-soft); }
+  .pitcher-faded .pname,
+  .pitcher-faded .pera { color: var(--ink-mute); }
   .pitcher-tbd .pname { color: var(--ink-mute); font-style: italic; }
+  .pnote {
+    font-style: italic;
+    opacity: 0.75;
+  }
   .side.home .pitcher { align-items: flex-end; }
 
   /* CENTER COLUMN */

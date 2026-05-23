@@ -38,9 +38,12 @@ pub struct PitcherInfo {
     pub era: f64,
     pub innings_pitched: f64,
     pub games_started: i32,
-    // Whether this pitcher's stats are large enough to be applied
-    // (vs. fall back to team RA). Mirrors MIN_IP_FOR_ADJUSTMENT.
+    // True when this pitcher's stats actually shifted the prediction.
+    // False if the user turned the toggle off OR the sample was too small.
     pub applied: bool,
+    // True when the pitcher's IP meets MIN_IP_FOR_ADJUSTMENT. Lets the frontend
+    // show "(small sample)" without re-deriving the threshold in JS.
+    pub eligible_sample: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,7 +309,7 @@ fn golden_section<F: Fn(f64) -> f64>(mut lo: f64, mut hi: f64, tol: f64, f: F) -
     round_to((lo + hi) / 2.0, 4)
 }
 
-fn round_to(x: f64, places: u32) -> f64 {
+pub fn round_to(x: f64, places: u32) -> f64 {
     let m = 10f64.powi(places as i32);
     (x * m).round() / m
 }

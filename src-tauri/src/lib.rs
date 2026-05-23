@@ -15,8 +15,8 @@ use tauri::State;
 use mlb_api::{fetch_pitcher_stats, fetch_schedule, Game, PitcherStats};
 use model::{
     compute_team_stats, estimate_game, estimate_game_with_pitchers, optimize_exponent,
-    prob_to_american_odds, pythag_win_pct, GameRow, PitcherAdj, PitcherInfo, Prediction, TeamStats,
-    MIN_IP_FOR_ADJUSTMENT,
+    prob_to_american_odds, pythag_win_pct, round_to, GameRow, PitcherAdj, PitcherInfo, Prediction,
+    TeamStats, MIN_IP_FOR_ADJUSTMENT,
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -102,8 +102,19 @@ impl AppState {
                 .map_err(|e| e.to_string())?;
             let now = Instant::now();
             let mut cache = self.cache.lock().unwrap();
-            for (id, ps) in fetched.iter() {
-                cache.pitchers.insert(*id, (ps.clone(), now));
+            for id in &missing {
+                match fetched.get(id) {
+                    Some(ps) => {
+                        cache.pitchers.insert(*id, (ps.clone(), now));
+                    }
+                    None => {
+                        // We asked for this pitcher but the API returned no stats
+                        // (e.g. mid-season trade, IL stint with no data). Drop any
+                        // stale cached entry so we don't keep refetching every call —
+                        // they'll be re-added if/when stats reappear.
+                        cache.pitchers.remove(id);
+                    }
+                }
             }
             found.extend(fetched);
         }
@@ -147,21 +158,27 @@ async fn get_predictions(
 
     let target_date = date.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
 
-    // Collect every probable pitcher for the target date, fetch their stats once.
-    // When include_pitchers is false the user wants pure Pythagorean — skip the fetch entirely.
-    let pitchers: HashMap<i32, PitcherStats> = if include_pitchers {
-        let pitcher_ids: Vec<i32> = games
-            .iter()
-            .filter(|g| g.date == target_date)
-            .flat_map(|g| [g.home_pitcher_id, g.away_pitcher_id])
-            .flatten()
-            .collect();
-        let mut unique_ids = pitcher_ids.clone();
-        unique_ids.sort_unstable();
-        unique_ids.dedup();
-        state.get_pitchers(season, &unique_ids).await.unwrap_or_default()
-    } else {
-        HashMap::new()
+    // Always fetch probable-pitcher stats so we can DISPLAY them on the card.
+    // The include_pitchers toggle gates whether they enter the model math (below),
+    // not whether the user sees who's starting.
+    let pitcher_ids: Vec<i32> = games
+        .iter()
+        .filter(|g| g.date == target_date)
+        .flat_map(|g| [g.home_pitcher_id, g.away_pitcher_id])
+        .flatten()
+        .collect();
+    let mut unique_ids = pitcher_ids.clone();
+    unique_ids.sort_unstable();
+    unique_ids.dedup();
+    let pitchers = match state.get_pitchers(season, &unique_ids).await {
+        Ok(p) => p,
+        Err(e) => {
+            // The MLB people endpoint failed — fall back to no pitcher adjustment
+            // (frontend will show names only, math runs pure Pythagorean). Log so
+            // the dev console / Tauri log surfaces a persistent outage.
+            eprintln!("[mlb-pe] pitcher stats fetch failed: {}", e);
+            HashMap::new()
+        }
     };
 
     let mut rows = Vec::new();
@@ -171,20 +188,27 @@ async fn get_predictions(
         let away = team_by_id.get(&g.away_team_id);
         match (home, away) {
             (Some(h), Some(a)) => {
-                let home_p_adj = g
-                    .home_pitcher_id
-                    .and_then(|id| pitchers.get(&id))
-                    .map(|p| PitcherAdj {
-                        era: p.era,
-                        innings_pitched: p.innings_pitched,
-                    });
-                let away_p_adj = g
-                    .away_pitcher_id
-                    .and_then(|id| pitchers.get(&id))
-                    .map(|p| PitcherAdj {
-                        era: p.era,
-                        innings_pitched: p.innings_pitched,
-                    });
+                // Only feed pitchers into the model when the toggle is on.
+                let home_p_adj = if include_pitchers {
+                    g.home_pitcher_id
+                        .and_then(|id| pitchers.get(&id))
+                        .map(|p| PitcherAdj {
+                            era: p.era,
+                            innings_pitched: p.innings_pitched,
+                        })
+                } else {
+                    None
+                };
+                let away_p_adj = if include_pitchers {
+                    g.away_pitcher_id
+                        .and_then(|id| pitchers.get(&id))
+                        .map(|p| PitcherAdj {
+                            era: p.era,
+                            innings_pitched: p.innings_pitched,
+                        })
+                } else {
+                    None
+                };
                 let pred = estimate_game_with_pitchers(
                     h,
                     a,
@@ -193,14 +217,20 @@ async fn get_predictions(
                     away_p_adj,
                     exp,
                 );
-                let (home_pinfo, away_pinfo) = if include_pitchers {
-                    (
-                        pitcher_info(g.home_pitcher_id, g.home_pitcher_name.as_deref(), &pitchers),
-                        pitcher_info(g.away_pitcher_id, g.away_pitcher_name.as_deref(), &pitchers),
-                    )
-                } else {
-                    (None, None)
-                };
+                // Always surface pitcher info for display, but mark `applied = false`
+                // when the toggle is off so the UI can fade the ERA visually.
+                let home_pinfo = pitcher_info(
+                    g.home_pitcher_id,
+                    g.home_pitcher_name.as_deref(),
+                    &pitchers,
+                    include_pitchers,
+                );
+                let away_pinfo = pitcher_info(
+                    g.away_pitcher_id,
+                    g.away_pitcher_name.as_deref(),
+                    &pitchers,
+                    include_pitchers,
+                );
                 rows.push(GameRow {
                     date: g.date.clone(),
                     home: g.home_team_name.clone(),
@@ -216,14 +246,14 @@ async fn get_predictions(
         }
     }
 
-    let mut available_dates: Vec<String> = games
+    // BTreeSet iterates in sorted order, so the resulting Vec is already sorted.
+    let available_dates: Vec<String> = games
         .iter()
         .filter(|g| matches!(g.status, mlb_api::GameStatus::Preview | mlb_api::GameStatus::Live))
         .map(|g| g.date.clone())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    available_dates.sort();
 
     Ok(PredictionsBundle {
         season,
@@ -354,34 +384,35 @@ fn default_season() -> i32 {
         .unwrap_or(2025)
 }
 
-fn round_to(x: f64, places: u32) -> f64 {
-    let m = 10f64.powi(places as i32);
-    (x * m).round() / m
-}
-
-// Build a PitcherInfo row for the UI. Falls back to a TBD-style entry when the
-// pitcher is announced but we have no season stats yet (rare early-season case).
+// Build a PitcherInfo row for the UI. `model_enabled` reflects the toggle:
+// false means the pitcher is shown but the prediction is pure team-level Pythagorean.
 fn pitcher_info(
     id: Option<i32>,
     name: Option<&str>,
     pitchers: &HashMap<i32, PitcherStats>,
+    model_enabled: bool,
 ) -> Option<PitcherInfo> {
     let id = id?;
     let name = name.unwrap_or("Unknown").to_string();
     match pitchers.get(&id) {
-        Some(ps) => Some(PitcherInfo {
-            name,
-            era: round_to(ps.era, 2),
-            innings_pitched: round_to(ps.innings_pitched, 1),
-            games_started: ps.games_started,
-            applied: ps.innings_pitched >= MIN_IP_FOR_ADJUSTMENT,
-        }),
+        Some(ps) => {
+            let eligible = ps.innings_pitched >= MIN_IP_FOR_ADJUSTMENT;
+            Some(PitcherInfo {
+                name,
+                era: round_to(ps.era, 2),
+                innings_pitched: round_to(ps.innings_pitched, 1),
+                games_started: ps.games_started,
+                applied: model_enabled && eligible,
+                eligible_sample: eligible,
+            })
+        }
         None => Some(PitcherInfo {
             name,
             era: 0.0,
             innings_pitched: 0.0,
             games_started: 0,
             applied: false,
+            eligible_sample: false,
         }),
     }
 }

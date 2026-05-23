@@ -147,7 +147,8 @@ fn http_client() -> Result<reqwest::Client> {
 }
 
 // Baseball notation: "35.2" means 35 + 2/3 innings (NOT 35.2 decimal).
-// The fractional part is 0, 1, or 2 thirds-of-an-inning.
+// The fractional part is always 0, 1, or 2 thirds-of-an-inning. Anything else
+// is malformed input — return None rather than silently producing a wrong value.
 fn parse_innings(s: Option<&str>) -> Option<f64> {
     let s = s?.trim();
     if s.is_empty() {
@@ -162,8 +163,7 @@ fn parse_innings(s: Option<&str>) -> Option<f64> {
         "0" | "" => 0.0,
         "1" => 1.0 / 3.0,
         "2" => 2.0 / 3.0,
-        // The API consistently uses 0/1/2; anything else: best-effort decimal parse.
-        _ => format!("0.{}", frac_s).parse().unwrap_or(0.0),
+        _ => return None,
     };
     Some(whole + thirds)
 }
@@ -338,5 +338,14 @@ mod tests {
         assert!((parse_innings(Some("0")).unwrap() - 0.0).abs() < 1e-6);
         assert_eq!(parse_innings(None), None);
         assert_eq!(parse_innings(Some("")), None);
+    }
+
+    #[test]
+    fn parse_innings_rejects_malformed() {
+        // The API only ever produces .0, .1, .2 — anything else is garbage.
+        assert_eq!(parse_innings(Some("7.30")), None);
+        assert_eq!(parse_innings(Some("7.5")), None);
+        assert_eq!(parse_innings(Some("abc")), None);
+        assert_eq!(parse_innings(Some("7.x")), None);
     }
 }
