@@ -16,6 +16,7 @@
   let useOptimalExp = $state(true);
   let manualExp = $state(2.0);
   let includePitchers = $state(true);
+  let includeHomeField = $state(true);
 
   async function load() {
     loading = true;
@@ -26,6 +27,7 @@
           date,
           exponent: useOptimalExp ? undefined : manualExp,
           includePitchers,
+          includeHomeField,
         }),
         getTeamStats({ exponent: useOptimalExp ? undefined : manualExp }),
         getStandings(),
@@ -182,6 +184,23 @@
         role="switch"
         aria-checked={includePitchers}
         onclick={() => { includePitchers = !includePitchers; load(); }}
+      >
+        <span class="thumb"></span>
+        <span class="track-label on-label">On</span>
+        <span class="track-label off-label">Off</span>
+      </button>
+    </label>
+    <label class="pitcher-toggle">
+      <span class="lbl">
+        Home Field
+        <InfoTip text="Adds a log-odds shift to home win probability matching MLB's ~54% historical home win rate. The bump shrinks at the extremes (a 90% favorite gains less than a 50/50 game). Off = neutral-site probability." />
+      </span>
+      <button
+        class="toggle"
+        class:on={includeHomeField}
+        role="switch"
+        aria-checked={includeHomeField}
+        onclick={() => { includeHomeField = !includeHomeField; load(); }}
       >
         <span class="thumb"></span>
         <span class="track-label on-label">On</span>
@@ -399,14 +418,14 @@
   }
   .controls {
     display: grid;
-    grid-template-columns: auto auto 1fr auto;
+    grid-template-columns: auto auto auto 1fr auto;
     gap: 16px 24px;
     align-items: end;
     margin-bottom: 20px;
   }
-  @media (max-width: 900px) {
+  @media (max-width: 1100px) {
     .controls {
-      grid-template-columns: auto auto auto;
+      grid-template-columns: auto auto auto auto;
     }
   }
   @media (max-width: 700px) {

@@ -28,10 +28,19 @@
   let awayPitcherIP = $state<number | null>(null);
   // Master toggle: when off, pitcher inputs are kept but ignored by the math.
   let applyPitchers = $state(true);
+  // Home-field advantage toggle.
+  let applyHomeField = $state(true);
 
   // Mirrors src-tauri/src/model.rs constants.
   const STARTER_SHARE = 0.6;
   const MIN_IP_FOR_ADJUSTMENT = 20;
+  const HOME_FIELD_LOG_ODDS = 0.1603;
+
+  function shiftLogOdds(p: number, delta: number): number {
+    const clamped = Math.max(1e-9, Math.min(1 - 1e-9, p));
+    const lo = Math.log(clamped / (1 - clamped)) + delta;
+    return 1 / (1 + Math.exp(-lo));
+  }
 
   function effectiveRA(rs: number, ra: number, g: number, pERA: number | null, pIP: number | null): number {
     const teamRAG = g > 0 ? ra / g : 4.5;
@@ -75,7 +84,10 @@
     // Pythag uses per-game rates; the exponent is the same as game-totals form (scale-invariant).
     const pHome = pythag(homeRSG, homeRAEff, exponent);
     const pAway = pythag(awayRSG, awayRAEff, exponent);
-    const homeWin = log5(pHome, pAway);
+    const neutralHomeWin = log5(pHome, pAway);
+    const homeWin = applyHomeField
+      ? shiftLogOdds(neutralHomeWin, HOME_FIELD_LOG_ODDS)
+      : neutralHomeWin;
     const awayWin = 1 - homeWin;
 
     const osH = homeRSG / leagueAvgRuns;
@@ -107,7 +119,9 @@
       const e = min + ((max - min) * i) / (steps - 1);
       const ph = pythag(homeRSG, homeRAEff, e);
       const pa = pythag(awayRSG, awayRAEff, e);
-      points.push({ x: e, y: log5(ph, pa) });
+      const neutral = log5(ph, pa);
+      const y = applyHomeField ? shiftLogOdds(neutral, HOME_FIELD_LOG_ODDS) : neutral;
+      points.push({ x: e, y });
     }
     return { points, min, max };
   });
@@ -377,6 +391,23 @@
                 role="switch"
                 aria-checked={applyPitchers}
                 onclick={() => applyPitchers = !applyPitchers}
+              >
+                <span class="thumb"></span>
+                <span class="track-label on-label">On</span>
+                <span class="track-label off-label">Off</span>
+              </button>
+            </label>
+            <label class="apply-toggle">
+              <span class="lbl">
+                Apply Home Field
+                <InfoTip text="Adds a log-odds shift to home win probability matching MLB's ~54% historical home win rate. Shrinks at the extremes." />
+              </span>
+              <button
+                class="toggle"
+                class:on={applyHomeField}
+                role="switch"
+                aria-checked={applyHomeField}
+                onclick={() => applyHomeField = !applyHomeField}
               >
                 <span class="thumb"></span>
                 <span class="track-label on-label">On</span>
@@ -823,6 +854,8 @@
   .apply-row {
     display: flex;
     justify-content: flex-end;
+    gap: 24px;
+    flex-wrap: wrap;
     margin-bottom: 14px;
     padding-bottom: 12px;
     border-bottom: 1px solid var(--line-soft);

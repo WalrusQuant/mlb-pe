@@ -166,9 +166,11 @@ async fn get_predictions(
     date: Option<String>,
     exponent: Option<f64>,
     include_pitchers: Option<bool>,
+    include_home_field: Option<bool>,
 ) -> Result<PredictionsBundle, String> {
     let season = season.unwrap_or_else(default_season);
     let include_pitchers = include_pitchers.unwrap_or(true);
+    let include_home_field = include_home_field.unwrap_or(true);
     let games = state.get_games(season, false).await?;
 
     let exp = match exponent {
@@ -240,6 +242,7 @@ async fn get_predictions(
                     home_p_adj,
                     away_p_adj,
                     exp,
+                    include_home_field,
                 );
                 // Always surface pitcher info for display, but mark `applied = false`
                 // when the toggle is off so the UI can fade the ERA visually.

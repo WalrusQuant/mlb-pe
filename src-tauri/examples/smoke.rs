@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|id| pitchers.get(&id))
                     .map(|p| PitcherAdj { era: p.era, innings_pitched: p.innings_pitched });
                 let base = estimate_game(h, a, lg_avg);
-                let p = estimate_game_with_pitchers(h, a, lg_avg, home_p, away_p, exp);
+                let p = estimate_game_with_pitchers(h, a, lg_avg, home_p, away_p, exp, true);
                 let hp_str = g
                     .home_pitcher_name
                     .as_deref()

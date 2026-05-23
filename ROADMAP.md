@@ -2,11 +2,18 @@
 
 Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered loosely by suggested sequence — we'll tackle one at a time.
 
+## Done
+
+- ✅ **#1 Starting pitcher adjustment** — blends starter ERA with team RA/G (`w = 0.6`, fallback under 20 IP). Toggle to disable. Pitcher info shown on every Predictions card. Learn page section 8.
+- ✅ **#2 Standings page** — six division tables + wild-card race per league using the `/standings` endpoint. Real (W-L) records now plumbed into Predictions cards.
+
+## Remaining
+
 ---
 
-## 1. Starting pitcher adjustment
+## 1. Starting pitcher adjustment ✅
 
-**The single biggest blind spot in the current model.** Pythagorean expectation knows team-level run scoring and run prevention, but has no idea whether tonight's starter is the ace or a spot starter.
+**Shipped.** Originally — the single biggest blind spot in the base Pythagorean model. Pythagorean knows team-level run scoring and run prevention, but had no idea whether tonight's starter is the ace or a spot starter.
 
 - Pull `probablePitcher` per game from the schedule endpoint (`/schedule?hydrate=probablePitcher`).
 - Pull each pitcher's season ERA / FIP / IP from the people endpoint.
@@ -19,19 +26,11 @@ Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered lo
 
 ---
 
-## 2. Standings page
+## 2. Standings page ✅
 
-A pure data-display page using `/standings?leagueId=103,104`.
+**Shipped.** Six division tables (AL East / Central / West, NL East / Central / West) plus a wild-card race section per league via `/standings?leagueId=103,104`. Shows W · L · PCT · GB · L10 · Streak · Run Diff per row; division leaders flagged; teams in WC position tinted. Real W-L records joined into the Predictions cards by team_id.
 
-- New nav tab: **Standings**.
-- Tables grouped by division (AL East / AL Central / etc.), with W, L, PCT, GB, Streak, L10, Run Diff, Pythag (from our model).
-- Wild-card race section.
-- Click a team → jump to a team detail view (future).
-
-**Bonus:** once W-L is plumbed through, we can show real records on the Predictions cards (replacing the gap I left there).
-
-**Impact:** medium. Doesn't improve the model but turns the app into a real baseball tool.
-**Effort:** low.
+Not yet wired: clicking a team to jump to a per-team detail view. Could revisit when there's a use for it.
 
 ---
 
@@ -125,9 +124,9 @@ A team with a gassed pen is a worse late-game bet than their season RA suggests.
 
 ## Suggested order
 
-1. **Starting pitcher adjustment** — biggest model lift.
-2. **Standings** — adds breadth, unblocks real W-L on Predictions cards.
-3. **Model performance tracker** — proves the work is sound.
-4. **Live scoreboard** — connective tissue between predictions and reality.
+1. ✅ **Starting pitcher adjustment** — biggest model lift.
+2. ✅ **Standings** — adds breadth, unblocks real W-L on Predictions cards.
+3. **Live scoreboard** — *next.* Connective tissue between predictions and reality; pairs with the Predictions cards we already have. Immediate visual payoff, no new persistence layer.
+4. **Model performance tracker** — proves the work is sound; valuable but has a cold-start problem (need weeks of logged predictions before the UI is interesting).
 5. **Park factors + home-field edge** — small polish on the model.
 6. Everything else as appetite allows.

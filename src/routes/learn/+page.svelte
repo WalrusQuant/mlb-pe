@@ -10,6 +10,7 @@
     { id: "example", label: "6 · Worked example" },
     { id: "limits", label: "7 · What it doesn't do" },
     { id: "pitcher", label: "8 · The pitcher adjustment" },
+    { id: "homefield", label: "9 · Home-field advantage" },
   ];
 </script>
 
@@ -237,6 +238,63 @@
       <strong>What we're not modeling:</strong> a starter's recent form (last 5 starts vs. season),
       FIP instead of ERA (FIP is often more predictive in small samples), home/road pitcher splits,
       handedness vs. lineup. All defensible future additions.
+    </p>
+  </section>
+
+  <section id="homefield">
+    <h2>9 · Home-field advantage</h2>
+    <p>
+      Pure log5 returns the probability one team beats another on a <em>neutral</em> field —
+      it has no notion of who's hosting. In reality, MLB home teams win about
+      <strong>54%</strong> of all games. Some of that is real (familiarity, sleep, batter's eye, no
+      flight the night before); some is umpire bias; some is selection (interleague schedules
+      and unbalanced divisions). Whatever the cause, the effect is consistent across the league
+      and across decades, and ignoring it leaves money on the table.
+    </p>
+
+    <p>
+      We apply the bump in <strong>log-odds space</strong> rather than directly to the probability.
+      The math:
+    </p>
+
+    <Formula label="Home-field advantage as a log-odds shift">
+      <em>log-odds(home_win<sub>adj</sub>)</em> =
+      <em>log-odds(home_win<sub>neutral</sub>)</em> + 0.1603
+    </Formula>
+
+    <p>
+      The constant <span class="mono">0.1603</span> is the log-odds difference between 0.50 and
+      0.54 — exactly the shift needed to convert a coin-flip game on a neutral field into the
+      54% home-team win rate observed historically.
+    </p>
+
+    <p>
+      Why log-odds instead of just adding 4% to the probability? Because a flat <em>+4%</em>
+      over-corrects at the extremes. A 95% favorite at home doesn't gain another 4% of win probability
+      — there isn't 4% left to gain in any meaningful sense. The log-odds shift naturally shrinks
+      the bump as you approach 0 or 1:
+    </p>
+
+    <p class="subtle">
+      <strong>Effect of the shift at various baselines:</strong><br />
+      &nbsp;&nbsp;50% &rarr; <strong>54.0%</strong> (+4.0 pts) — the design point<br />
+      &nbsp;&nbsp;60% &rarr; <strong>63.9%</strong> (+3.9 pts)<br />
+      &nbsp;&nbsp;75% &rarr; <strong>78.3%</strong> (+3.3 pts)<br />
+      &nbsp;&nbsp;90% &rarr; <strong>91.6%</strong> (+1.6 pts)
+    </p>
+
+    <p>
+      Both the <a href="/">Predictions</a> page and the <a href="/playground">Playground</a> have a
+      <em>Home Field</em> toggle. Flip it off to see the underlying neutral-site probability — useful
+      for sanity-checking, comparing against neutral-site models, or evaluating one team's standalone
+      strength.
+    </p>
+
+    <p class="subtle">
+      <strong>What this captures and what it doesn't:</strong> we model the <em>league-average</em>
+      home-field effect uniformly. Some parks are tougher to play in than others (think Coors's altitude,
+      Fenway's wall, Tropicana's lighting) but we don't differentiate. A per-park multiplier would be a
+      reasonable v2.
     </p>
   </section>
 

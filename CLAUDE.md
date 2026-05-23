@@ -4,21 +4,23 @@ Project-specific guidance for Claude Code working on this repo. Read this first.
 
 ## What this is
 
-A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
+A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment and a home-field advantage shift. Also has a Standings page and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
 
-Public MLB Stats API (`https://statsapi.mlb.com`) is the only data source. No auth, no rate limits in practice. Cached in-process for 10 minutes (schedule) / 1 hour (pitcher stats).
+Public MLB Stats API (`https://statsapi.mlb.com`) is the only data source. No auth, no rate limits in practice. Cached in-process for 10 minutes (schedule + standings) / 1 hour (pitcher stats).
 
 ## Architecture
 
 ```
 src-tauri/src/
-├── mlb_api.rs     # HTTP client for /schedule and /people endpoints
-├── model.rs       # Pythagorean, log5, OS/DS, pitcher blend, exponent fitter
-└── lib.rs         # Tauri commands + AppState cache
+├── mlb_api.rs     # HTTP client for /schedule, /people, /standings endpoints
+├── model.rs       # Pythagorean, log5, OS/DS, pitcher blend, home-field shift,
+│                  # exponent fitter
+└── lib.rs         # Tauri commands + AppState cache (schedule + pitchers + standings)
 
 src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (card-per-matchup)
+│   ├── standings/+page.svelte      # Division standings + wild-card race
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
 │   └── playground/+page.svelte     # Team table + matchup editor
 └── lib/
@@ -38,10 +40,13 @@ For each matchup:
    `effective_RA/G = 0.6 · starter_ERA + 0.4 · team_RA/G`
    Below `MIN_IP = 20` innings, fall back to pure team RA.
 3. Matchup win prob via log5.
-4. Predicted runs = OS × DS_effective × league-avg.
-5. Fair American odds from the win prob.
+4. **Home-field advantage** (when toggle is on): shift home win in *log-odds space* by `HOME_FIELD_LOG_ODDS = 0.1603` (= logit(0.54) − logit(0.50)). This bumps a 50/50 game to ~54% but shrinks at the extremes (a 90% favorite gains < 2 pts). Helper: `shift_log_odds(p, delta)` in `model.rs`.
+5. Predicted runs = OS × DS_effective × league-avg (HFA does NOT affect run totals).
+6. Fair American odds from the home-field-adjusted win prob.
 
-Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`.
+Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`, `HOME_FIELD_LOG_ODDS = 0.1603`.
+
+Both toggles live on the Predictions page (apply server-side via `get_predictions` params `includePitchers` / `includeHomeField`) AND on the Playground page (apply client-side via mirrored JS math — keep the Rust and JS implementations in sync).
 
 ## Conventions
 
@@ -62,6 +67,12 @@ Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20
 4. **Date timezones.** Frontend uses `new Date().toISOString().slice(0, 10)` which is UTC. Backend defaults to `Utc::now()`. After ~7 PM CDT this means "today" rolls to tomorrow's date — that's intentional, matches the API's `officialDate`.
 
 5. **Tauri 2 + Svelte 5 reactivity.** When `invoke()` returns, assign to a `$state` variable directly. Don't await inside a `$derived`.
+
+6. **Cross-endpoint team names differ.** `/schedule` returns full names ("Tampa Bay Rays"); `/standings` returns short names ("Rays"). **Always join across endpoints by `team_id`**, never by name. The Predictions card learned this the hard way when wiring in W-L records.
+
+7. **MLB API mixes string and int types.** `wins`/`losses`/`runDifferential` are ints, but `divisionRank`/`leagueRank`/`wildCardRank` are *strings* like `"1"`. Type DTOs accordingly and parse in normalize. If deserialization fails with "expected i64, got string," this is why.
+
+8. **JS / Rust model drift risk.** The Playground mirrors the model in JS for instant slider feedback. When you change a constant or formula in `model.rs`, you MUST also update `src/routes/playground/+page.svelte`. Search for the constant name in both files.
 
 ## Commands
 
@@ -86,7 +97,7 @@ The smoke test is the fastest way to validate backend changes against real data 
 
 ## Roadmap
 
-[`ROADMAP.md`](./ROADMAP.md) tracks the broader feature list. Pitcher adjustment is the first item — done. Standings, model performance tracker, live scoreboard, park factors, and a few smaller ideas remain.
+[`ROADMAP.md`](./ROADMAP.md) tracks the broader feature list. Done: **pitcher adjustment**, **standings**, **home-field advantage**. Remaining: live scoreboard, model performance tracker, park factors, recent-form weighting, head-to-head history, edge/value finder, bullpen quality.
 
 ## Memory
 

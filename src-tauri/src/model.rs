@@ -144,7 +144,7 @@ pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64
 }
 
 pub fn estimate_game(home: &TeamStats, away: &TeamStats, lg_avg_runs: f64) -> Prediction {
-    estimate_game_with_pitchers(home, away, lg_avg_runs, None, None, 2.0)
+    estimate_game_with_pitchers(home, away, lg_avg_runs, None, None, 2.0, false)
 }
 
 // Per Bill James / sabermetrics consensus: a starting pitcher is responsible for ~5.4
@@ -153,6 +153,22 @@ pub fn estimate_game(home: &TeamStats, away: &TeamStats, lg_avg_runs: f64) -> Pr
 pub const STARTER_SHARE: f64 = 0.6;
 // Below this, the pitcher sample is too small to trust — fall back to team RA.
 pub const MIN_IP_FOR_ADJUSTMENT: f64 = 20.0;
+
+// Home-field advantage: MLB's historical home win rate is ~54%. We add the
+// equivalent log-odds shift to the home team's win probability:
+//   logit(0.54) - logit(0.50) ≈ 0.1603
+// Applied in log-odds space (not probability space) so it shrinks naturally at
+// the extremes — a 90% favorite gets a smaller bump than a coin-flip game.
+pub const HOME_FIELD_LOG_ODDS: f64 = 0.1603;
+
+// Shift a win probability by a log-odds delta.
+pub fn shift_log_odds(p: f64, delta: f64) -> f64 {
+    // Clamp away from {0, 1} to avoid infinities. In practice log5 never returns
+    // exactly 0 or 1 for any realistic input, but be defensive.
+    let p = p.clamp(1e-9, 1.0 - 1e-9);
+    let lo = (p / (1.0 - p)).ln() + delta;
+    1.0 / (1.0 + (-lo).exp())
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PitcherAdj {
@@ -187,6 +203,7 @@ pub fn estimate_game_with_pitchers(
     home_pitcher: Option<PitcherAdj>,
     away_pitcher: Option<PitcherAdj>,
     exponent: f64,
+    apply_home_field: bool,
 ) -> Prediction {
     // Team RS/G is fixed (offense doesn't change night-to-night), but RA/G shifts
     // toward the starting pitcher's ERA.
@@ -215,7 +232,12 @@ pub fn estimate_game_with_pitchers(
     let away_pred = away.os * home_ds_eff * lg_avg_runs;
     let total = home_pred + away_pred;
 
-    let home_win = log5(home_pyt, away_pyt);
+    let neutral_home_win = log5(home_pyt, away_pyt);
+    let home_win = if apply_home_field {
+        shift_log_odds(neutral_home_win, HOME_FIELD_LOG_ODDS)
+    } else {
+        neutral_home_win
+    };
     let away_win = 1.0 - home_win;
     Prediction {
         home_win_prob: round_to(home_win, 4),
@@ -372,5 +394,22 @@ mod tests {
     fn prob_to_odds_dog() {
         // +150 → implied probability 40%
         assert_eq!(prob_to_american_odds(0.4), 150);
+    }
+
+    #[test]
+    fn home_field_shift_at_coin_flip() {
+        // 50% → ~54% with the historical log-odds shift
+        let adj = shift_log_odds(0.5, HOME_FIELD_LOG_ODDS);
+        assert!((adj - 0.54).abs() < 0.001);
+    }
+
+    #[test]
+    fn home_field_shift_shrinks_at_extremes() {
+        // A 90% favorite should bump by less than 4 percentage points
+        let adj = shift_log_odds(0.9, HOME_FIELD_LOG_ODDS);
+        assert!(adj > 0.9 && adj < 0.92);
+        // A 10% dog likewise — bumped, but not by 4 absolute points
+        let adj_low = shift_log_odds(0.1, HOME_FIELD_LOG_ODDS);
+        assert!(adj_low > 0.1 && adj_low < 0.12);
     }
 }
