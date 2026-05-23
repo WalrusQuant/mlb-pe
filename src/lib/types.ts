@@ -64,6 +64,9 @@ export type TeamStats = {
   pythag_win_pct: number;
   os: number;
   ds: number;
+  recent_games: number | null;
+  recent_rs_per_game: number | null;
+  recent_ra_per_game: number | null;
 };
 
 export type TeamStatsBundle = {

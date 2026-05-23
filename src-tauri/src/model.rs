@@ -17,6 +17,11 @@ pub struct TeamStats {
     pub pythag_win_pct: f64,
     pub os: f64,
     pub ds: f64,
+    // L20 (or however many completed games we have, up to RECENT_FORM_WINDOW).
+    // None when the team has no completed games yet.
+    pub recent_games: Option<i32>,
+    pub recent_rs_per_game: Option<f64>,
+    pub recent_ra_per_game: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,7 +106,9 @@ pub fn prob_to_american_odds(p: f64) -> i32 {
     }
 }
 
-// Aggregate season-to-date team stats from completed games.
+// Aggregate season-to-date team stats from completed games. Each TeamStats also
+// carries its team's L20 (or fewer, if not enough completed games) so callers
+// can derive recency-aware views without a separate call.
 // Returns (team stats, league-average runs per team per game).
 pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64) {
     let mut agg: HashMap<i32, AggRow> = HashMap::new();
@@ -135,6 +142,8 @@ pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64
         4.5
     };
 
+    let recent = compute_recent_form(games, RECENT_FORM_WINDOW);
+
     let mut stats: Vec<TeamStats> = agg
         .into_iter()
         .filter(|(_, row)| row.games_played > 0)
@@ -142,6 +151,7 @@ pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64
             let rs = row.runs_scored as f64;
             let ra = row.runs_allowed as f64;
             let gp = row.games_played as f64;
+            let r = recent.get(&team_id);
             TeamStats {
                 team_id,
                 team: row.name,
@@ -151,6 +161,9 @@ pub fn compute_team_stats(games: &[Game], exponent: f64) -> (Vec<TeamStats>, f64
                 pythag_win_pct: pythag_win_pct(rs, ra, exponent),
                 os: (rs / gp) / lg_avg_runs,
                 ds: (ra / gp) / lg_avg_runs,
+                recent_games: r.map(|x| x.games),
+                recent_rs_per_game: r.map(|x| round_to(x.rs_per_game, 2)),
+                recent_ra_per_game: r.map(|x| round_to(x.ra_per_game, 2)),
             }
         })
         .collect();
@@ -554,10 +567,12 @@ mod tests {
         let home = TeamStats {
             team_id: 1, team: "H".into(), runs_scored: 400, runs_allowed: 400,
             games_played: 100, pythag_win_pct: 0.5, os: 1.0, ds: 1.0,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
         };
         let away = TeamStats {
             team_id: 2, team: "A".into(), runs_scored: 400, runs_allowed: 400,
             games_played: 100, pythag_win_pct: 0.5, os: 1.0, ds: 1.0,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
         };
         // No recent form → 50/50.
         let neutral = estimate_game_with_pitchers(&home, &away, 4.0, None, None, None, None, 2.0, false);

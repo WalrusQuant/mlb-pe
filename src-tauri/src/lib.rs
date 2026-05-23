@@ -439,6 +439,9 @@ fn make_synth_team(t: &TeamInput, exponent: f64, lg_avg_runs: f64) -> TeamStats 
         pythag_win_pct: pythag_win_pct(t.runs_scored, t.runs_allowed, exponent),
         os: (t.runs_scored / gp) / lg_avg_runs,
         ds: (t.runs_allowed / gp) / lg_avg_runs,
+        recent_games: None,
+        recent_rs_per_game: None,
+        recent_ra_per_game: None,
     }
 }
 
