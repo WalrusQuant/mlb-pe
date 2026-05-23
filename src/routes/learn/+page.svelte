@@ -154,18 +154,19 @@
       <ol>
         <li>
           <strong>Pythagorean win % (x = 1.83)</strong><br />
-          Dodgers: 540<sup>1.83</sup> / (540<sup>1.83</sup> + 410<sup>1.83</sup>) ≈ <strong>0.624</strong><br />
-          Marlins: 400<sup>1.83</sup> / (400<sup>1.83</sup> + 510<sup>1.83</sup>) ≈ <strong>0.395</strong>
+          Dodgers: 540<sup>1.83</sup> / (540<sup>1.83</sup> + 410<sup>1.83</sup>) ≈ <strong>0.623</strong><br />
+          Marlins: 400<sup>1.83</sup> / (400<sup>1.83</sup> + 510<sup>1.83</sup>) ≈ <strong>0.391</strong>
         </li>
         <li>
           <strong>log5 (Dodgers home)</strong><br />
-          0.624 × (1 − 0.395) / [0.624 × (1 − 0.395) + (1 − 0.624) × 0.395] ≈ <strong>71.7%</strong>
-          → fair odds ~<span class="mono">-253</span>
+          0.623 × (1 − 0.391) / [0.623 × (1 − 0.391) + (1 − 0.623) × 0.391] ≈ <strong>72.0%</strong>
+          → fair odds ~<span class="mono">-257</span>
         </li>
         <li>
           <strong>Predicted runs</strong><br />
-          OS<sub>LAD</sub> = (540/100) / 4.50 = 1.20 · DS<sub>MIA</sub> = (510/99) / 4.50 = 1.144<br />
-          E[LAD] = 1.20 × 1.144 × 4.50 ≈ <strong>6.2</strong>; E[MIA] ≈ 3.4; total ≈ <strong>9.6</strong>
+          OS<sub>LAD</sub> = (540/100) / 4.50 = 1.200 · DS<sub>MIA</sub> = (510/99) / 4.50 = 1.145<br />
+          OS<sub>MIA</sub> = (400/99) / 4.50 = 0.898 · DS<sub>LAD</sub> = (410/100) / 4.50 = 0.911<br />
+          E[LAD] = 1.200 × 1.145 × 4.50 ≈ <strong>6.2</strong>; E[MIA] = 0.898 × 0.911 × 4.50 ≈ 3.7; total ≈ <strong>9.9</strong>
         </li>
       </ol>
     </div>
@@ -281,9 +282,9 @@
     <p class="subtle">
       <strong>Effect of the shift at various baselines:</strong><br />
       &nbsp;&nbsp;50% &rarr; <strong>54.0%</strong> (+4.0 pts) — the design point<br />
-      &nbsp;&nbsp;60% &rarr; <strong>63.9%</strong> (+3.9 pts)<br />
-      &nbsp;&nbsp;75% &rarr; <strong>78.3%</strong> (+3.3 pts)<br />
-      &nbsp;&nbsp;90% &rarr; <strong>91.6%</strong> (+1.6 pts)
+      &nbsp;&nbsp;60% &rarr; <strong>63.8%</strong> (+3.8 pts)<br />
+      &nbsp;&nbsp;75% &rarr; <strong>77.9%</strong> (+2.9 pts)<br />
+      &nbsp;&nbsp;90% &rarr; <strong>91.4%</strong> (+1.4 pts)
     </p>
 
     <p>
