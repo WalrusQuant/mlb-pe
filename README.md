@@ -15,6 +15,15 @@ A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill Ja
 - **Playground** — a sortable table of all 30 teams (Rank · W% · R/G · RA/G · OS · DS) on the left; pick a Home and Away with one click, then tweak runs, games, the Pythagorean exponent, an optional Starter ERA / IP, and optional L20 RS/G + RA/G overrides on the right. Three toggles let you flip the pitcher adjustment, home-field advantage, and recent-form blend on/off live. The win-prob, predicted runs, fair odds, and a sensitivity chart update instantly.
 - Data is pulled directly from the public [MLB Stats API](https://statsapi.mlb.com). Schedule and standings cached for 10 minutes, pitcher stats for 1 hour.
 
+## Screenshots
+
+|  |  |
+|:--:|:--:|
+| ![Standings](./docs/standings.png) | ![Stats](./docs/stats.png) |
+| **Standings** — divisions + wild-card race | **Stats** — luck, OS/DS, hot/cold |
+| ![Learn](./docs/learn.png) | ![Playground](./docs/playground.png) |
+| **Learn** — interactive math walkthrough | **Playground** — team-table + matchup editor |
+
 ## The model in one paragraph
 
 Each team's standalone strength is its *Pythagorean win %* — `RS^x / (RS^x + RA^x)`, where the exponent `x` is fit to the current season's actual results (typically near 1.6–1.9). Before plugging into Pythagorean we (optionally) blend the team's RS/G and RA/G with its last-20-games rates using a 60% season / 40% recent split, so hot or cold streaks nudge the prediction without overwhelming the larger sample. For any given matchup, if the probable starting pitcher is announced and has at least 20 innings on the season, the team's effective runs-allowed for that game is `0.6 · starter_ERA + 0.4 · (L20-blended) team_RA/G` — capturing the fact that the starter handles ~60% of the innings. The two teams' adjusted Pythagorean win %s are combined into a matchup probability via *log5*. We then apply a home-field shift in log-odds space (equivalent to a +4 percentage-point bump at a 50/50 baseline, matching MLB's historical ~54% home win rate). Predicted runs use offensive and defensive strength (relative to the league average), where defensive strength uses the pitcher-adjusted RA. A full walkthrough is built into the app's Learn tab.
