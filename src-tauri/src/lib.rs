@@ -451,7 +451,7 @@ fn default_season() -> i32 {
         .format("%Y")
         .to_string()
         .parse()
-        .unwrap_or(2025)
+        .unwrap_or(2026)
 }
 
 // Build a PitcherInfo row for the UI. `model_enabled` reflects the toggle:
