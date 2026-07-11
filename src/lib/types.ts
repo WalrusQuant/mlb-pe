@@ -35,6 +35,7 @@ export type Recent = {
 };
 
 export type GameRow = {
+  gamePk: number;
   date: string;
   home: string;
   away: string;
@@ -53,6 +54,57 @@ export type PredictionsBundle = {
   games: GameRow[];
   skipped: string[];
   availableDates: string[];
+};
+
+// Per-team intermediate values behind a prediction (mirrors Rust SideBreakdown).
+// Rate flow: season → (+recent-form blend) → (+pitcher) → effective.
+export type SideBreakdown = {
+  seasonRsPerGame: number;
+  seasonRaPerGame: number;
+  recentPresent: boolean;
+  recentGames: number;
+  recentRsPerGame: number;
+  recentRaPerGame: number;
+  recentApplied: boolean;
+  blendedRsPerGame: number;
+  blendedRaPerGame: number;
+  pitcherPresent: boolean;
+  pitcherEra: number;
+  pitcherIp: number;
+  pitcherApplied: boolean;
+  effectiveRaPerGame: number;
+  pythagWinPct: number;
+  osEff: number;
+  dsEff: number;
+  predRuns: number;
+};
+
+export type MatchupBreakdown = {
+  home: SideBreakdown;
+  away: SideBreakdown;
+  exponent: number;
+  leagueAvgRuns: number;
+  neutralHomeWin: number;
+  homeFieldApplied: boolean;
+  homeFieldDelta: number;
+  finalHomeWin: number;
+  finalAwayWin: number;
+};
+
+export type GameBreakdownBundle = {
+  season: number;
+  date: string;
+  gamePk: number;
+  home: string;
+  away: string;
+  homeTeamId: number;
+  awayTeamId: number;
+  homePitcher: Pitcher | null;
+  awayPitcher: Pitcher | null;
+  homeRecent: Recent | null;
+  awayRecent: Recent | null;
+  prediction: Prediction;
+  breakdown: MatchupBreakdown;
 };
 
 export type TeamStats = {

@@ -5,6 +5,7 @@ import type {
   StandingsBundle,
   TeamStatsBundle,
   TeamInput,
+  GameBreakdownBundle,
 } from "./types";
 
 export async function getPredictions(opts: {
@@ -16,6 +17,17 @@ export async function getPredictions(opts: {
   includeRecentForm?: boolean;
 } = {}): Promise<PredictionsBundle> {
   return await invoke<PredictionsBundle>("get_predictions", opts);
+}
+
+export async function getGameBreakdown(opts: {
+  season?: number;
+  gamePk: number;
+  exponent?: number;
+  includePitchers?: boolean;
+  includeHomeField?: boolean;
+  includeRecentForm?: boolean;
+}): Promise<GameBreakdownBundle> {
+  return await invoke<GameBreakdownBundle>("get_game_breakdown", opts);
 }
 
 export async function getTeamStats(opts: {

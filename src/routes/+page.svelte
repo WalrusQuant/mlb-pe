@@ -119,6 +119,19 @@
     return `${st.wins}-${st.losses}`;
   }
 
+  // Link to the game-detail route, carrying the current date + toggle + exponent
+  // state in the query string so the breakdown matches this card exactly.
+  function gameHref(gamePk: number): string {
+    const params = new URLSearchParams({
+      date,
+      p: String(includePitchers),
+      hf: String(includeHomeField),
+      rf: String(includeRecentForm),
+    });
+    if (!useOptimalExp) params.set("exp", String(manualExp));
+    return `/game/${gamePk}?${params.toString()}`;
+  }
+
   function rpg(t: TeamStats | undefined): string {
     if (!t || t.games_played === 0) return "—";
     return (t.runs_scored / t.games_played).toFixed(1);
@@ -279,6 +292,7 @@
           {@const homeTeam = teamsByName.get(g.home)}
           {@const awayWin = g.awayWinProb >= 0.5}
           {@const homeWin = g.homeWinProb >= 0.5}
+          <a class="matchup-link" href={gameHref(g.gamePk)} aria-label="{g.away} at {g.home} — full breakdown">
           <article class="card matchup">
             {#if g.gameTag}
               <div class="dh-tag">{g.gameTag}</div>
@@ -436,6 +450,7 @@
               </div>
             </div>
           </article>
+          </a>
         {/each}
       </div>
     {/if}
@@ -597,11 +612,30 @@
     grid-template-columns: 1fr;
     gap: 14px;
   }
+  .matchup-link {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    border-radius: var(--radius);
+  }
+  .matchup-link:hover {
+    text-decoration: none;
+  }
   .matchup {
     position: relative;
     padding: 22px 26px;
     min-width: 0;
     overflow: hidden;
+    height: 100%;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .matchup-link:hover .matchup {
+    border-color: var(--line);
+    transform: translateY(-2px);
+  }
+  .matchup-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .dh-tag {
     position: absolute;

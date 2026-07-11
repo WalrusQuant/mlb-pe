@@ -65,6 +65,8 @@ pub struct RecentInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GameRow {
+    #[serde(rename = "gamePk")]
+    pub game_pk: i64,
     pub date: String,
     pub home: String,
     pub away: String,
@@ -224,6 +226,51 @@ pub struct RecentForm {
     pub ra_per_game: f64,
 }
 
+// Per-team intermediate values behind the prediction, for the game-detail view.
+// Everything here is already computed inside estimate_game_detailed; we just keep
+// it instead of discarding it. rates flow: season -> (+recent blend) -> (+pitcher).
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SideBreakdown {
+    pub season_rs_per_game: f64,
+    pub season_ra_per_game: f64,
+    // Recent-form (L20) inputs. present is false when the team has no L20 sample.
+    pub recent_present: bool,
+    pub recent_games: i32,
+    pub recent_rs_per_game: f64,
+    pub recent_ra_per_game: f64,
+    // True when the L20 blend actually moved the rates (toggle on AND sample big enough).
+    pub recent_applied: bool,
+    pub blended_rs_per_game: f64,
+    pub blended_ra_per_game: f64,
+    // Pitcher inputs. present is false when no probable pitcher / no stats.
+    pub pitcher_present: bool,
+    pub pitcher_era: f64,
+    pub pitcher_ip: f64,
+    // True when the starter ERA actually moved effective RA (toggle on AND IP big enough).
+    pub pitcher_applied: bool,
+    pub effective_ra_per_game: f64,
+    pub pythag_win_pct: f64,
+    pub os_eff: f64,
+    pub ds_eff: f64,
+    pub pred_runs: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchupBreakdown {
+    pub home: SideBreakdown,
+    pub away: SideBreakdown,
+    pub exponent: f64,
+    pub league_avg_runs: f64,
+    // log5 home win before any home-field shift.
+    pub neutral_home_win: f64,
+    pub home_field_applied: bool,
+    pub home_field_delta: f64,
+    pub final_home_win: f64,
+    pub final_away_win: f64,
+}
+
 // Aggregate each team's last N completed games into a RecentForm row.
 // Iterates the schedule once in date order, then trims per team. Returns a
 // map keyed by team_id so the predictions loop can look up O(1).
@@ -315,6 +362,35 @@ pub fn estimate_game_with_pitchers(
     exponent: f64,
     apply_home_field: bool,
 ) -> Prediction {
+    estimate_game_detailed(
+        home,
+        away,
+        lg_avg_runs,
+        home_pitcher,
+        away_pitcher,
+        home_recent,
+        away_recent,
+        exponent,
+        apply_home_field,
+    )
+    .0
+}
+
+// Same math as estimate_game_with_pitchers, but also returns the intermediate
+// values behind the prediction (for the game-detail view). This is the single
+// source of truth — estimate_game_with_pitchers is a thin wrapper over it.
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_game_detailed(
+    home: &TeamStats,
+    away: &TeamStats,
+    lg_avg_runs: f64,
+    home_pitcher: Option<PitcherAdj>,
+    away_pitcher: Option<PitcherAdj>,
+    home_recent: Option<RecentForm>,
+    away_recent: Option<RecentForm>,
+    exponent: f64,
+    apply_home_field: bool,
+) -> (Prediction, MatchupBreakdown) {
     // Season-level RS/G and team RA/G. Each may be blended with the team's L20
     // form (if a RecentForm is provided AND the sample meets MIN_RECENT_GAMES).
     let home_season_rs_pg = season_rs_pg(home);
@@ -371,7 +447,8 @@ pub fn estimate_game_with_pitchers(
         neutral_home_win
     };
     let away_win = 1.0 - home_win;
-    Prediction {
+
+    let pred = Prediction {
         home_win_prob: round_to(home_win, 4),
         away_win_prob: round_to(away_win, 4),
         home_fair_odds: prob_to_american_odds(home_win),
@@ -379,7 +456,64 @@ pub fn estimate_game_with_pitchers(
         home_pred_runs: round_to(home_pred, 2),
         away_pred_runs: round_to(away_pred, 2),
         total_runs: round_to(total, 2),
-    }
+    };
+
+    let side = |season_rs: f64,
+                season_ra: f64,
+                recent: Option<RecentForm>,
+                blended_rs: f64,
+                blended_ra: f64,
+                pitcher: Option<PitcherAdj>,
+                ra_eff: f64,
+                pyt: f64,
+                os_eff: f64,
+                ds_eff: f64,
+                pred_runs: f64|
+     -> SideBreakdown {
+        let recent_applied = matches!(recent, Some(r) if r.games >= MIN_RECENT_GAMES);
+        let pitcher_applied =
+            matches!(pitcher, Some(p) if p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT);
+        SideBreakdown {
+            season_rs_per_game: round_to(season_rs, 2),
+            season_ra_per_game: round_to(season_ra, 2),
+            recent_present: recent.is_some(),
+            recent_games: recent.map(|r| r.games).unwrap_or(0),
+            recent_rs_per_game: round_to(recent.map(|r| r.rs_per_game).unwrap_or(0.0), 2),
+            recent_ra_per_game: round_to(recent.map(|r| r.ra_per_game).unwrap_or(0.0), 2),
+            recent_applied,
+            blended_rs_per_game: round_to(blended_rs, 2),
+            blended_ra_per_game: round_to(blended_ra, 2),
+            pitcher_present: pitcher.is_some(),
+            pitcher_era: round_to(pitcher.map(|p| p.era).unwrap_or(0.0), 2),
+            pitcher_ip: round_to(pitcher.map(|p| p.innings_pitched).unwrap_or(0.0), 1),
+            pitcher_applied,
+            effective_ra_per_game: round_to(ra_eff, 2),
+            pythag_win_pct: round_to(pyt, 4),
+            os_eff: round_to(os_eff, 3),
+            ds_eff: round_to(ds_eff, 3),
+            pred_runs: round_to(pred_runs, 2),
+        }
+    };
+
+    let breakdown = MatchupBreakdown {
+        home: side(
+            home_season_rs_pg, home_season_ra_pg, home_recent, home_rs_pg, home_ra_team,
+            home_pitcher, home_ra_eff, home_pyt, home_os_eff, home_ds_eff, home_pred,
+        ),
+        away: side(
+            away_season_rs_pg, away_season_ra_pg, away_recent, away_rs_pg, away_ra_team,
+            away_pitcher, away_ra_eff, away_pyt, away_os_eff, away_ds_eff, away_pred,
+        ),
+        exponent: round_to(exponent, 4),
+        league_avg_runs: round_to(lg_avg_runs, 3),
+        neutral_home_win: round_to(neutral_home_win, 4),
+        home_field_applied: apply_home_field,
+        home_field_delta: if apply_home_field { HOME_FIELD_LOG_ODDS } else { 0.0 },
+        final_home_win: round_to(home_win, 4),
+        final_away_win: round_to(away_win, 4),
+    };
+
+    (pred, breakdown)
 }
 
 // Find the exponent (in [0.5, 5.0]) that minimizes MSE between predicted and actual win%
@@ -583,5 +717,35 @@ mod tests {
         let away_cold = Some(RecentForm { games: 20, rs_per_game: 3.0, ra_per_game: 6.0 });
         let hot = estimate_game_with_pitchers(&home, &away, 4.0, None, None, home_hot, away_cold, 2.0, false);
         assert!(hot.home_win_prob > 0.6, "expected home > 0.6, got {}", hot.home_win_prob);
+    }
+
+    #[test]
+    fn detailed_breakdown_matches_prediction() {
+        // The breakdown's final win probs and predicted runs must equal the
+        // headline Prediction — otherwise the detail view would silently diverge.
+        let home = TeamStats {
+            team_id: 1, team: "H".into(), runs_scored: 480, runs_allowed: 400,
+            games_played: 100, pythag_win_pct: 0.6, os: 1.1, ds: 0.9,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let away = TeamStats {
+            team_id: 2, team: "A".into(), runs_scored: 420, runs_allowed: 450,
+            games_played: 100, pythag_win_pct: 0.45, os: 0.95, ds: 1.05,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let hp = Some(PitcherAdj { era: 3.10, innings_pitched: 120.0 });
+        let ap = Some(PitcherAdj { era: 4.80, innings_pitched: 90.0 });
+        let hr = Some(RecentForm { games: 20, rs_per_game: 5.2, ra_per_game: 3.8 });
+        let ar = Some(RecentForm { games: 20, rs_per_game: 3.9, ra_per_game: 4.6 });
+
+        let (pred, bd) =
+            estimate_game_detailed(&home, &away, 4.5, hp, ap, hr, ar, 1.83, true);
+
+        assert_eq!(bd.final_home_win, pred.home_win_prob);
+        assert_eq!(bd.final_away_win, pred.away_win_prob);
+        assert_eq!(bd.home.pred_runs, pred.home_pred_runs);
+        assert_eq!(bd.away.pred_runs, pred.away_pred_runs);
+        assert!(bd.home.pitcher_applied && bd.home.recent_applied);
+        assert!(bd.home_field_applied && bd.home_field_delta > 0.0);
     }
 }

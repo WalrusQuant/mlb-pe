@@ -12,6 +12,7 @@ const USER_AGENT: &str = "mlb-pe-tauri/0.1 (github.com/adamwickwire/mlb-pe)";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Game {
+    pub game_pk: i64,
     pub date: String, // "YYYY-MM-DD"
     pub status: GameStatus,
     pub series_description: Option<String>,
@@ -203,6 +204,7 @@ fn normalize(resp: ApiScheduleResponse) -> Vec<Game> {
                 .map(|p| (Some(p.id), Some(p.full_name.clone())))
                 .unwrap_or((None, None));
             out.push(Game {
+                game_pk: g.game_pk,
                 date: game_date,
                 status,
                 series_description: g.series_description,
@@ -240,6 +242,8 @@ struct ApiScheduleDate {
 
 #[derive(Debug, Deserialize)]
 struct ApiGame {
+    #[serde(rename = "gamePk")]
+    game_pk: i64,
     #[serde(rename = "officialDate")]
     official_date: Option<String>,
     status: ApiStatus,

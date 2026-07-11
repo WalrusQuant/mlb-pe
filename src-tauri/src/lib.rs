@@ -14,10 +14,10 @@ use tauri::State;
 
 use mlb_api::{fetch_pitcher_stats, fetch_schedule, fetch_standings, Game, PitcherStats, TeamStanding};
 use model::{
-    compute_recent_form, compute_team_stats, estimate_game, estimate_game_with_pitchers,
-    optimize_exponent, prob_to_american_odds, pythag_win_pct, round_to, GameRow, PitcherAdj,
-    PitcherInfo, Prediction, RecentForm, RecentInfo, TeamStats, MIN_IP_FOR_ADJUSTMENT,
-    MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
+    compute_recent_form, compute_team_stats, estimate_game, estimate_game_detailed,
+    estimate_game_with_pitchers, optimize_exponent, prob_to_american_odds, pythag_win_pct,
+    round_to, GameRow, MatchupBreakdown, PitcherAdj, PitcherInfo, Prediction, RecentForm,
+    RecentInfo, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -221,31 +221,15 @@ async fn get_predictions(
         let away = team_by_id.get(&g.away_team_id);
         match (home, away) {
             (Some(h), Some(a)) => {
-                // Only feed pitchers into the model when the toggle is on.
-                let home_p_adj = if include_pitchers {
-                    g.home_pitcher_id
-                        .and_then(|id| pitchers.get(&id))
-                        .map(|p| PitcherAdj {
-                            era: p.era,
-                            innings_pitched: p.innings_pitched,
-                        })
-                } else {
-                    None
-                };
-                let away_p_adj = if include_pitchers {
-                    g.away_pitcher_id
-                        .and_then(|id| pitchers.get(&id))
-                        .map(|p| PitcherAdj {
-                            era: p.era,
-                            innings_pitched: p.innings_pitched,
-                        })
-                } else {
-                    None
-                };
                 let home_recent_raw = recent_by_id.get(&g.home_team_id).copied();
                 let away_recent_raw = recent_by_id.get(&g.away_team_id).copied();
-                let home_recent_adj = if include_recent_form { home_recent_raw } else { None };
-                let away_recent_adj = if include_recent_form { away_recent_raw } else { None };
+                let (home_p_adj, away_p_adj, home_recent_adj, away_recent_adj) = matchup_inputs(
+                    g,
+                    &pitchers,
+                    &recent_by_id,
+                    include_pitchers,
+                    include_recent_form,
+                );
 
                 let pred = estimate_game_with_pitchers(
                     h,
@@ -275,6 +259,7 @@ async fn get_predictions(
                 let home_rinfo = recent_info(home_recent_raw, include_recent_form);
                 let away_rinfo = recent_info(away_recent_raw, include_recent_form);
                 rows.push(GameRow {
+                    game_pk: g.game_pk,
                     date: g.date.clone(),
                     home: g.home_team_name.clone(),
                     away: g.away_team_name.clone(),
@@ -384,6 +369,120 @@ async fn get_standings(
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameBreakdownBundle {
+    season: i32,
+    date: String,
+    game_pk: i64,
+    home: String,
+    away: String,
+    home_team_id: i32,
+    away_team_id: i32,
+    home_pitcher: Option<PitcherInfo>,
+    away_pitcher: Option<PitcherInfo>,
+    home_recent: Option<RecentInfo>,
+    away_recent: Option<RecentInfo>,
+    prediction: Prediction,
+    breakdown: MatchupBreakdown,
+}
+
+#[tauri::command]
+async fn get_game_breakdown(
+    state: State<'_, AppState>,
+    season: Option<i32>,
+    game_pk: i64,
+    exponent: Option<f64>,
+    include_pitchers: Option<bool>,
+    include_home_field: Option<bool>,
+    include_recent_form: Option<bool>,
+) -> Result<GameBreakdownBundle, String> {
+    let season = season.unwrap_or_else(default_season);
+    let include_pitchers = include_pitchers.unwrap_or(true);
+    let include_home_field = include_home_field.unwrap_or(true);
+    let include_recent_form = include_recent_form.unwrap_or(true);
+    let games = state.get_games(season, false).await?;
+
+    let g = games
+        .iter()
+        .find(|g| g.game_pk == game_pk)
+        .ok_or_else(|| format!("game {} not found in the {} schedule", game_pk, season))?;
+
+    let exp = match exponent {
+        Some(e) => e,
+        None => state.get_or_compute_optimal_exp(season, &games),
+    };
+
+    let (team_stats, lg_avg_runs) = compute_team_stats(&games, exp);
+    let team_by_id: HashMap<i32, &TeamStats> =
+        team_stats.iter().map(|t| (t.team_id, t)).collect();
+    let recent_by_id = compute_recent_form(&games, RECENT_FORM_WINDOW);
+
+    let home = team_by_id
+        .get(&g.home_team_id)
+        .ok_or_else(|| format!("no season stats yet for {}", g.home_team_name))?;
+    let away = team_by_id
+        .get(&g.away_team_id)
+        .ok_or_else(|| format!("no season stats yet for {}", g.away_team_name))?;
+
+    let mut ids: Vec<i32> = [g.home_pitcher_id, g.away_pitcher_id]
+        .into_iter()
+        .flatten()
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let pitchers = match state.get_pitchers(season, &ids).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[mlb-pe] pitcher stats fetch failed: {}", e);
+            HashMap::new()
+        }
+    };
+
+    let home_recent_raw = recent_by_id.get(&g.home_team_id).copied();
+    let away_recent_raw = recent_by_id.get(&g.away_team_id).copied();
+    let (home_p_adj, away_p_adj, home_recent_adj, away_recent_adj) =
+        matchup_inputs(g, &pitchers, &recent_by_id, include_pitchers, include_recent_form);
+
+    let (prediction, breakdown) = estimate_game_detailed(
+        home,
+        away,
+        lg_avg_runs,
+        home_p_adj,
+        away_p_adj,
+        home_recent_adj,
+        away_recent_adj,
+        exp,
+        include_home_field,
+    );
+
+    Ok(GameBreakdownBundle {
+        season,
+        date: g.date.clone(),
+        game_pk,
+        home: g.home_team_name.clone(),
+        away: g.away_team_name.clone(),
+        home_team_id: g.home_team_id,
+        away_team_id: g.away_team_id,
+        home_pitcher: pitcher_info(
+            g.home_pitcher_id,
+            g.home_pitcher_name.as_deref(),
+            &pitchers,
+            include_pitchers,
+        ),
+        away_pitcher: pitcher_info(
+            g.away_pitcher_id,
+            g.away_pitcher_name.as_deref(),
+            &pitchers,
+            include_pitchers,
+        ),
+        home_recent: recent_info(home_recent_raw, include_recent_form),
+        away_recent: recent_info(away_recent_raw, include_recent_form),
+        prediction,
+        breakdown,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamInput {
@@ -454,6 +553,46 @@ fn default_season() -> i32 {
         .unwrap_or(2026)
 }
 
+// Toggle-gated model inputs for one game: the starter adjustments and L20 forms
+// that actually feed estimate_game_*. Returns None for any input the toggle
+// disables (so the prediction collapses to pure team-level Pythagorean). Shared
+// by get_predictions and get_game_breakdown so the gating can never drift.
+fn matchup_inputs(
+    g: &Game,
+    pitchers: &HashMap<i32, PitcherStats>,
+    recent_by_id: &HashMap<i32, RecentForm>,
+    include_pitchers: bool,
+    include_recent_form: bool,
+) -> (
+    Option<PitcherAdj>,
+    Option<PitcherAdj>,
+    Option<RecentForm>,
+    Option<RecentForm>,
+) {
+    let p_adj = |id: Option<i32>| -> Option<PitcherAdj> {
+        if !include_pitchers {
+            return None;
+        }
+        id.and_then(|id| pitchers.get(&id)).map(|p| PitcherAdj {
+            era: p.era,
+            innings_pitched: p.innings_pitched,
+        })
+    };
+    let recent = |team_id: i32| -> Option<RecentForm> {
+        if include_recent_form {
+            recent_by_id.get(&team_id).copied()
+        } else {
+            None
+        }
+    };
+    (
+        p_adj(g.home_pitcher_id),
+        p_adj(g.away_pitcher_id),
+        recent(g.home_team_id),
+        recent(g.away_team_id),
+    )
+}
+
 // Build a PitcherInfo row for the UI. `model_enabled` reflects the toggle:
 // false means the pitcher is shown but the prediction is pure team-level Pythagorean.
 fn pitcher_info(
@@ -508,6 +647,7 @@ pub fn run() {
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             get_predictions,
+            get_game_breakdown,
             get_team_stats,
             get_optimal_exponent,
             refresh_schedule,
