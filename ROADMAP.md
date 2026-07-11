@@ -8,8 +8,17 @@ Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered lo
 - ✅ **#2 Standings page** — six division tables + wild-card race per league using the `/standings` endpoint. Real (W-L) records now plumbed into Predictions cards.
 - ✅ **#5a Home-field advantage** — log-odds shift of 0.1603 (= logit(0.54) − logit(0.50)) applied to home win probability. Shrinks at the extremes. Toggle on Predictions + Playground. Learn page section 9. Park factors (the other half of original #5) still TBD.
 - ✅ **#7 Recent form weighting** — `RS/G` and `RA/G` blended 60% season + 40% L20. Aggregates completed games from the cached schedule (no extra API call). Toggle on Predictions + Playground. L20 line shown on every card. Learn page section 10.
+- ✅ **Game detail view** — click any matchup card → `/game/[gamePk]`. Tier 1: a step-by-step walkthrough of how the model reached that prediction (rate chain → per-team Pythagorean → log5 → home-field → runs → odds). Tier 2: the context sections below (#8, #9, plus home/road + L10 splits). `gamePk` now threaded through the schedule — also the correct doubleheader key.
+- ✅ **#8 Head-to-head history** — season series record + per-meeting list on the game detail page. Computed from the cached schedule (no API call).
+- ✅ **#9 Bullpen quality** — each team's season relief line (ERA / IP / WHIP / SV) on the game detail page, via the team relief split (`sitCodes=rp`), cached 1 h. The last-3-days *fatigue* refinement (per-pitcher game logs) is still TBD.
 
 ## Remaining
+
+- **#3 Model performance tracker**
+- **#4 Live scoreboard** — *next in suggested order.*
+- **#5b Park factors** — the run-multiplier half of the original #5.
+- **#6 Edge / value finder**
+- **#9b Bullpen fatigue** — last-3-days workload, on top of the season line already shipped.
 
 ---
 
@@ -96,23 +105,17 @@ A view that flags games where the model is most opinionated — and games where 
 
 ---
 
-## 8. Head-to-head history
+## 8. Head-to-head history ✅
 
-For each predicted matchup, show season series record (`ATL leads season series 4-2`).
-Pull from completed games already in our schedule cache. No new API call.
-
-**Impact:** small. Nice color, not a model improvement.
-**Effort:** trivial.
+**Shipped.** Season series record + a per-meeting list on the game detail page (`Rays lead the series 4-3`, with each meeting's score). Computed from completed games already in the schedule cache — no new API call.
 
 ---
 
-## 9. Bullpen quality / fatigue
+## 9. Bullpen quality / fatigue ✅ (season line)
 
-Bullpen ERA and innings pitched over the last 3 days.
-A team with a gassed pen is a worse late-game bet than their season RA suggests.
+**Shipped (season line).** Each team's aggregate relief pitching for the season — ERA / IP / WHIP / SV — on the game detail page, from the team relief split (`/teams/{id}/stats?stats=statSplits&sitCodes=rp`), cached 1 h.
 
-**Impact:** small-to-medium.
-**Effort:** medium. Requires per-pitcher game logs.
+Still TBD: **last-3-days fatigue** (bullpen IP over the last few days). A gassed pen is a worse late-game bet than the season line suggests, but that needs per-pitcher game logs — tracked as **#9b** in Remaining.
 
 ---
 
