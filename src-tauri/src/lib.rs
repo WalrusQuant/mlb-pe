@@ -12,17 +12,23 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use mlb_api::{fetch_pitcher_stats, fetch_schedule, fetch_standings, Game, PitcherStats, TeamStanding};
+use mlb_api::{
+    fetch_boxscore, fetch_bullpen, fetch_pitcher_stats, fetch_schedule, fetch_standings, Bullpen,
+    Game, Lineups, PitcherStats, TeamStanding,
+};
 use model::{
-    compute_recent_form, compute_team_stats, estimate_game, estimate_game_detailed,
-    estimate_game_with_pitchers, optimize_exponent, prob_to_american_odds, pythag_win_pct,
-    round_to, GameRow, MatchupBreakdown, PitcherAdj, PitcherInfo, Prediction, RecentForm,
-    RecentInfo, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
+    compute_head_to_head, compute_recent_form, compute_splits, compute_team_stats, estimate_game,
+    estimate_game_detailed, estimate_game_with_pitchers, optimize_exponent, prob_to_american_odds,
+    pythag_win_pct, round_to, GameRow, HeadToHead, MatchupBreakdown, PitcherAdj, PitcherInfo,
+    Prediction, RecentForm, RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT,
+    MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 const PITCHER_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour — ERA changes slowly
 const STANDINGS_CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
+const BOXSCORE_CACHE_TTL: Duration = Duration::from_secs(300); // 5 min — lineups shift until first pitch
+const BULLPEN_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour
 
 pub struct AppState {
     cache: Mutex<Cache>,
@@ -34,6 +40,8 @@ struct Cache {
     optimal_exp: HashMap<i32, f64>,
     pitchers: HashMap<i32, (PitcherStats, Instant)>,
     standings: Option<(i32, Vec<TeamStanding>, Instant)>,
+    boxscores: HashMap<i64, (Lineups, Instant)>,
+    bullpens: HashMap<(i32, i32), (Bullpen, Instant)>,
 }
 
 impl AppState {
@@ -144,6 +152,39 @@ impl AppState {
         let mut cache = self.cache.lock().unwrap();
         cache.standings = Some((season, st.clone(), Instant::now()));
         Ok(st)
+    }
+
+    async fn get_boxscore(&self, game_pk: i64) -> Result<Lineups, String> {
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some((lu, t)) = cache.boxscores.get(&game_pk) {
+                if t.elapsed() < BOXSCORE_CACHE_TTL {
+                    return Ok(lu.clone());
+                }
+            }
+        }
+        let lu = fetch_boxscore(game_pk).await.map_err(|e| e.to_string())?;
+        let mut cache = self.cache.lock().unwrap();
+        cache.boxscores.insert(game_pk, (lu.clone(), Instant::now()));
+        Ok(lu)
+    }
+
+    async fn get_bullpen(&self, season: i32, team_id: i32) -> Result<Option<Bullpen>, String> {
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some((bp, t)) = cache.bullpens.get(&(season, team_id)) {
+                if t.elapsed() < BULLPEN_CACHE_TTL {
+                    return Ok(Some(*bp));
+                }
+            }
+        }
+        let bp = fetch_bullpen(season, team_id).await.map_err(|e| e.to_string())?;
+        // Only cache a real hit — leave None uncached so it retries when the split appears.
+        if let Some(bp) = bp {
+            let mut cache = self.cache.lock().unwrap();
+            cache.bullpens.insert((season, team_id), (bp, Instant::now()));
+        }
+        Ok(bp)
     }
 }
 
@@ -483,6 +524,79 @@ async fn get_game_breakdown(
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameContextBundle {
+    game_pk: i64,
+    home: String,
+    away: String,
+    home_team_id: i32,
+    away_team_id: i32,
+    head_to_head: HeadToHead,
+    home_splits: TeamSplits,
+    away_splits: TeamSplits,
+    lineups: Lineups,
+    home_bullpen: Option<Bullpen>,
+    away_bullpen: Option<Bullpen>,
+}
+
+// Matchup + team context around a game: head-to-head series and home/road/L10
+// splits (computed from the cached schedule, no network) plus probable lineups
+// and each bullpen's relief line (fetched, cached, best-effort). Loaded by the
+// detail page separately from get_game_breakdown so the model walkthrough never
+// waits on these network calls.
+#[tauri::command]
+async fn get_game_context(
+    state: State<'_, AppState>,
+    season: Option<i32>,
+    game_pk: i64,
+) -> Result<GameContextBundle, String> {
+    let season = season.unwrap_or_else(default_season);
+    let games = state.get_games(season, false).await?;
+    let g = games
+        .iter()
+        .find(|g| g.game_pk == game_pk)
+        .ok_or_else(|| format!("game {} not found in the {} schedule", game_pk, season))?;
+
+    let head_to_head = compute_head_to_head(&games, g.home_team_id, g.away_team_id);
+    let home_splits = compute_splits(&games, g.home_team_id);
+    let away_splits = compute_splits(&games, g.away_team_id);
+
+    // Network calls run concurrently; each degrades to empty/None rather than
+    // failing the whole bundle (same posture as the pitcher-fetch fallback).
+    let (lineups, home_bp, away_bp) = tokio::join!(
+        state.get_boxscore(game_pk),
+        state.get_bullpen(season, g.home_team_id),
+        state.get_bullpen(season, g.away_team_id),
+    );
+    let lineups = lineups.unwrap_or_else(|e| {
+        eprintln!("[mlb-pe] boxscore fetch failed: {}", e);
+        Lineups::default()
+    });
+    let home_bullpen = home_bp.unwrap_or_else(|e| {
+        eprintln!("[mlb-pe] home bullpen fetch failed: {}", e);
+        None
+    });
+    let away_bullpen = away_bp.unwrap_or_else(|e| {
+        eprintln!("[mlb-pe] away bullpen fetch failed: {}", e);
+        None
+    });
+
+    Ok(GameContextBundle {
+        game_pk,
+        home: g.home_team_name.clone(),
+        away: g.away_team_name.clone(),
+        home_team_id: g.home_team_id,
+        away_team_id: g.away_team_id,
+        head_to_head,
+        home_splits,
+        away_splits,
+        lineups,
+        home_bullpen,
+        away_bullpen,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamInput {
@@ -648,6 +762,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_predictions,
             get_game_breakdown,
+            get_game_context,
             get_team_stats,
             get_optimal_exponent,
             refresh_schedule,

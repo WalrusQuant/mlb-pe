@@ -311,6 +311,143 @@ pub fn compute_recent_form(games: &[Game], window: usize) -> HashMap<i32, Recent
     out
 }
 
+// One completed meeting between the two teams this season.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H2HMeeting {
+    pub game_pk: i64,
+    pub date: String,
+    pub home_name: String,
+    pub away_name: String,
+    pub home_runs: i32,
+    pub away_runs: i32,
+}
+
+// Season head-to-head record between team A and team B. `a_id`/`b_id` fix which
+// side of the wins/runs tallies is which so the frontend can label without guessing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadToHead {
+    pub a_id: i32,
+    pub b_id: i32,
+    pub a_wins: i32,
+    pub b_wins: i32,
+    pub a_runs: i32,
+    pub b_runs: i32,
+    pub meetings: Vec<H2HMeeting>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitLine {
+    pub games: i32,
+    pub wins: i32,
+    pub losses: i32,
+    pub rs_per_game: f64,
+    pub ra_per_game: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSplits {
+    pub home: SplitLine,
+    pub road: SplitLine,
+    // L10 form (last 10 completed games, home + road). None when no games yet.
+    pub l10: Option<RecentForm>,
+}
+
+// Season series between two teams, computed from completed games already in memory.
+pub fn compute_head_to_head(games: &[Game], a_id: i32, b_id: i32) -> HeadToHead {
+    let mut h = HeadToHead {
+        a_id,
+        b_id,
+        a_wins: 0,
+        b_wins: 0,
+        a_runs: 0,
+        b_runs: 0,
+        meetings: Vec::new(),
+    };
+    for g in games.iter().filter(|g| g.is_final()) {
+        let ids = (g.home_team_id, g.away_team_id);
+        if ids != (a_id, b_id) && ids != (b_id, a_id) {
+            continue;
+        }
+        let hr = g.home_runs.unwrap();
+        let ar = g.away_runs.unwrap();
+        // Map this game's home/away runs onto the A/B tallies.
+        let (a_r, b_r) = if g.home_team_id == a_id { (hr, ar) } else { (ar, hr) };
+        h.a_runs += a_r;
+        h.b_runs += b_r;
+        if a_r > b_r {
+            h.a_wins += 1;
+        } else if b_r > a_r {
+            h.b_wins += 1;
+        }
+        h.meetings.push(H2HMeeting {
+            game_pk: g.game_pk,
+            date: g.date.clone(),
+            home_name: g.home_team_name.clone(),
+            away_name: g.away_team_name.clone(),
+            home_runs: hr,
+            away_runs: ar,
+        });
+    }
+    h.meetings.sort_by(|x, y| x.date.cmp(&y.date));
+    h
+}
+
+// Home / road / last-10 splits for one team, from completed games in memory.
+pub fn compute_splits(games: &[Game], team_id: i32) -> TeamSplits {
+    let mut home = SplitAgg::default();
+    let mut road = SplitAgg::default();
+    for g in games.iter().filter(|g| g.is_final()) {
+        let hr = g.home_runs.unwrap();
+        let ar = g.away_runs.unwrap();
+        if g.home_team_id == team_id {
+            home.add(hr, ar);
+        } else if g.away_team_id == team_id {
+            road.add(ar, hr);
+        }
+    }
+    TeamSplits {
+        home: home.finish(),
+        road: road.finish(),
+        l10: compute_recent_form(games, 10).get(&team_id).copied(),
+    }
+}
+
+#[derive(Default)]
+struct SplitAgg {
+    games: i32,
+    wins: i32,
+    losses: i32,
+    rs: i32,
+    ra: i32,
+}
+
+impl SplitAgg {
+    fn add(&mut self, scored: i32, allowed: i32) {
+        self.games += 1;
+        self.rs += scored;
+        self.ra += allowed;
+        if scored > allowed {
+            self.wins += 1;
+        } else if allowed > scored {
+            self.losses += 1;
+        }
+    }
+    fn finish(&self) -> SplitLine {
+        let g = self.games.max(1) as f64;
+        SplitLine {
+            games: self.games,
+            wins: self.wins,
+            losses: self.losses,
+            rs_per_game: round_to(self.rs as f64 / g, 2),
+            ra_per_game: round_to(self.ra as f64 / g, 2),
+        }
+    }
+}
+
 // Blend a season-level per-game rate with the L20 rate. If the recent sample
 // is missing or too small (early season), fall back to the season number.
 fn blend(season_per_g: f64, recent: Option<(f64, i32)>, weight: f64) -> f64 {
@@ -625,6 +762,62 @@ impl AggRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mlb_api::GameStatus;
+
+    // A completed game for split/H2H tests.
+    fn fin(pk: i64, date: &str, h_id: i32, h: &str, hr: i32, a_id: i32, a: &str, ar: i32) -> Game {
+        Game {
+            game_pk: pk,
+            date: date.into(),
+            status: GameStatus::Final,
+            series_description: Some("Regular Season".into()),
+            home_team_id: h_id,
+            home_team_name: h.into(),
+            home_runs: Some(hr),
+            away_team_id: a_id,
+            away_team_name: a.into(),
+            away_runs: Some(ar),
+            home_pitcher_id: None,
+            home_pitcher_name: None,
+            away_pitcher_id: None,
+            away_pitcher_name: None,
+        }
+    }
+
+    #[test]
+    fn head_to_head_tallies_by_side() {
+        let games = vec![
+            fin(1, "2026-04-01", 10, "A", 5, 20, "B", 3), // A home, A wins
+            fin(2, "2026-04-02", 20, "B", 7, 10, "A", 2), // B home, B wins
+            fin(3, "2026-04-03", 10, "A", 1, 20, "B", 4), // A home, B wins
+            fin(4, "2026-04-04", 30, "C", 9, 10, "A", 0), // unrelated
+        ];
+        let h = compute_head_to_head(&games, 10, 20);
+        assert_eq!(h.a_wins, 1);
+        assert_eq!(h.b_wins, 2);
+        assert_eq!(h.a_runs, 5 + 2 + 1);
+        assert_eq!(h.b_runs, 3 + 7 + 4);
+        assert_eq!(h.meetings.len(), 3);
+        assert_eq!(h.meetings[0].date, "2026-04-01"); // sorted
+    }
+
+    #[test]
+    fn splits_separate_home_and_road() {
+        let games = vec![
+            fin(1, "2026-04-01", 10, "A", 6, 20, "B", 2), // A home win, 6/2
+            fin(2, "2026-04-02", 10, "A", 1, 30, "C", 5), // A home loss, 1/5
+            fin(3, "2026-04-03", 40, "D", 3, 10, "A", 8), // A road win, 8/3
+        ];
+        let s = compute_splits(&games, 10);
+        assert_eq!(s.home.games, 2);
+        assert_eq!(s.home.wins, 1);
+        assert_eq!(s.home.losses, 1);
+        assert!((s.home.rs_per_game - 3.5).abs() < 1e-9); // (6+1)/2
+        assert!((s.home.ra_per_game - 3.5).abs() < 1e-9); // (2+5)/2
+        assert_eq!(s.road.games, 1);
+        assert_eq!(s.road.wins, 1);
+        assert!((s.road.rs_per_game - 8.0).abs() < 1e-9);
+    }
 
     #[test]
     fn pythag_classic_exponent() {

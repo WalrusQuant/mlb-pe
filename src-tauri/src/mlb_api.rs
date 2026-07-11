@@ -8,6 +8,8 @@ use std::collections::HashMap;
 const SCHEDULE_BASE: &str = "https://statsapi.mlb.com/api/v1/schedule";
 const PEOPLE_BASE: &str = "https://statsapi.mlb.com/api/v1/people";
 const STANDINGS_BASE: &str = "https://statsapi.mlb.com/api/v1/standings";
+const GAME_BASE: &str = "https://statsapi.mlb.com/api/v1/game";
+const TEAMS_BASE: &str = "https://statsapi.mlb.com/api/v1/teams";
 const USER_AGENT: &str = "mlb-pe-tauri/0.1 (github.com/adamwickwire/mlb-pe)";
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +141,92 @@ pub async fn fetch_pitcher_stats(
         }
     }
     Ok(out)
+}
+
+// ─── BOXSCORE / LINEUPS ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineupSpot {
+    pub order: i32,
+    pub name: String,
+    pub position: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Lineups {
+    pub home: Vec<LineupSpot>,
+    pub away: Vec<LineupSpot>,
+}
+
+// Starting lineups for a game. Empty vecs until the lineup is posted (~hours
+// before first pitch); a Final game carries the lineup that actually played.
+pub async fn fetch_boxscore(game_pk: i64) -> Result<Lineups> {
+    let url = format!("{}/{}/boxscore", GAME_BASE, game_pk);
+    let client = http_client()?;
+    let resp: ApiBoxscore = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {} failed", url))?
+        .error_for_status()
+        .context("non-2xx response from MLB boxscore API")?
+        .json()
+        .await
+        .context("failed to deserialize MLB boxscore")?;
+    Ok(Lineups {
+        home: resp.teams.home.lineup(),
+        away: resp.teams.away.lineup(),
+    })
+}
+
+// ─── BULLPEN (team relief split) ───────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bullpen {
+    pub era: f64,
+    pub innings_pitched: f64,
+    pub whip: f64,
+    pub saves: i32,
+}
+
+// A team's aggregate pitching when in relief, this season. None if the split
+// isn't available yet (no relief innings, or the API returns nothing).
+pub async fn fetch_bullpen(season: i32, team_id: i32) -> Result<Option<Bullpen>> {
+    let url = format!(
+        "{}/{}/stats?season={}&group=pitching&stats=statSplits&sitCodes=rp",
+        TEAMS_BASE, team_id, season
+    );
+    let client = http_client()?;
+    let resp: ApiTeamStatsResponse = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {} failed", url))?
+        .error_for_status()
+        .context("non-2xx response from MLB team stats API")?
+        .json()
+        .await
+        .context("failed to deserialize MLB team stats")?;
+
+    let stat = resp
+        .stats
+        .into_iter()
+        .flat_map(|g| g.splits)
+        .map(|s| s.stat)
+        .next();
+    Ok(stat.and_then(|st| {
+        let era = st.era.as_deref().and_then(|v| v.parse::<f64>().ok())?;
+        let ip = parse_innings(st.innings_pitched.as_deref())?;
+        Some(Bullpen {
+            era,
+            innings_pitched: ip,
+            whip: st.whip.as_deref().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0),
+            saves: st.saves.unwrap_or(0),
+        })
+    }))
 }
 
 fn http_client() -> Result<reqwest::Client> {
@@ -329,6 +417,95 @@ struct ApiPitchingStat {
     innings_pitched: Option<String>,
     #[serde(rename = "gamesStarted", default)]
     games_started: Option<i32>,
+}
+
+// ---- boxscore DTOs ----
+
+#[derive(Debug, Deserialize)]
+struct ApiBoxscore {
+    teams: ApiBoxTeams,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiBoxTeams {
+    home: ApiBoxTeam,
+    away: ApiBoxTeam,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiBoxTeam {
+    #[serde(rename = "battingOrder", default)]
+    batting_order: Vec<i64>,
+    #[serde(default)]
+    players: HashMap<String, ApiBoxPlayer>,
+}
+
+impl ApiBoxTeam {
+    // Join the batting-order ids against the players map. Cap at 9 — the array
+    // can append substitutes on a completed game; we only want the starters.
+    fn lineup(&self) -> Vec<LineupSpot> {
+        self.batting_order
+            .iter()
+            .take(9)
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let p = self.players.get(&format!("ID{}", id))?;
+                Some(LineupSpot {
+                    order: i as i32 + 1,
+                    name: p.person.full_name.clone(),
+                    position: p
+                        .position
+                        .as_ref()
+                        .map(|pos| pos.abbreviation.clone())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiBoxPlayer {
+    person: ApiPitcherRef,
+    #[serde(default)]
+    position: Option<ApiPosition>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPosition {
+    #[serde(default)]
+    abbreviation: String,
+}
+
+// ---- team stats (bullpen) DTOs ----
+
+#[derive(Debug, Deserialize)]
+struct ApiTeamStatsResponse {
+    #[serde(default)]
+    stats: Vec<ApiTeamStatsGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiTeamStatsGroup {
+    #[serde(default)]
+    splits: Vec<ApiTeamStatSplit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiTeamStatSplit {
+    stat: ApiBullpenStat,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiBullpenStat {
+    #[serde(default)]
+    era: Option<String>,
+    #[serde(rename = "inningsPitched", default)]
+    innings_pitched: Option<String>,
+    #[serde(default)]
+    whip: Option<String>,
+    #[serde(default)]
+    saves: Option<i32>,
 }
 
 // ─── STANDINGS ─────────────────────────────────────────────────────────

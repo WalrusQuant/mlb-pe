@@ -107,6 +107,78 @@ export type GameBreakdownBundle = {
   breakdown: MatchupBreakdown;
 };
 
+// ── Tier 2: matchup & team context (mirrors Rust GameContextBundle) ──
+export type H2HMeeting = {
+  gamePk: number;
+  date: string;
+  homeName: string;
+  awayName: string;
+  homeRuns: number;
+  awayRuns: number;
+};
+
+export type HeadToHead = {
+  aId: number;
+  bId: number;
+  aWins: number;
+  bWins: number;
+  aRuns: number;
+  bRuns: number;
+  meetings: H2HMeeting[];
+};
+
+export type SplitLine = {
+  games: number;
+  wins: number;
+  losses: number;
+  rsPerGame: number;
+  raPerGame: number;
+};
+
+export type RecentForm = {
+  games: number;
+  rsPerGame: number;
+  raPerGame: number;
+};
+
+export type TeamSplits = {
+  home: SplitLine;
+  road: SplitLine;
+  l10: RecentForm | null;
+};
+
+export type LineupSpot = {
+  order: number;
+  name: string;
+  position: string;
+};
+
+export type Lineups = {
+  home: LineupSpot[];
+  away: LineupSpot[];
+};
+
+export type Bullpen = {
+  era: number;
+  inningsPitched: number;
+  whip: number;
+  saves: number;
+};
+
+export type GameContextBundle = {
+  gamePk: number;
+  home: string;
+  away: string;
+  homeTeamId: number;
+  awayTeamId: number;
+  headToHead: HeadToHead;
+  homeSplits: TeamSplits;
+  awaySplits: TeamSplits;
+  lineups: Lineups;
+  homeBullpen: Bullpen | null;
+  awayBullpen: Bullpen | null;
+};
+
 export type TeamStats = {
   team_id: number;
   team: string;

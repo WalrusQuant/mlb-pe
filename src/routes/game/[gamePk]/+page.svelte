@@ -1,13 +1,22 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
-  import { getGameBreakdown, getStandings } from "$lib/api";
-  import type { GameBreakdownBundle, SideBreakdown } from "$lib/types";
+  import { getGameBreakdown, getGameContext, getStandings } from "$lib/api";
+  import type {
+    GameBreakdownBundle,
+    SideBreakdown,
+    GameContextBundle,
+    TeamSplits,
+    LineupSpot,
+    Bullpen,
+  } from "$lib/types";
   import { fmtPct, fmtOdds, fmtRuns } from "$lib/format";
   import Formula from "$lib/components/Formula.svelte";
   import InfoTip from "$lib/components/InfoTip.svelte";
 
   let bundle = $state<GameBreakdownBundle | null>(null);
+  let context = $state<GameContextBundle | null>(null);
+  let contextLoading = $state(false);
   let recordById = $state<Map<number, string>>(new Map());
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -39,6 +48,20 @@
     }
   }
 
+  // Matchup context (H2H, splits, lineups, bullpen) loads independently so the
+  // model breakdown above never waits on its network calls. Best-effort.
+  async function loadContext(gamePk: number) {
+    contextLoading = true;
+    context = null;
+    try {
+      context = await getGameContext({ gamePk });
+    } catch {
+      /* best-effort — leave context null */
+    } finally {
+      contextLoading = false;
+    }
+  }
+
   // Reload whenever the route param or query state changes (SvelteKit reuses this
   // component across game→game navigations, so onMount alone wouldn't refire).
   $effect(() => {
@@ -56,7 +79,18 @@
       includeHomeField: sp.get("hf") !== "false",
       includeRecentForm: sp.get("rf") !== "false",
     });
+    loadContext(gamePk);
   });
+
+  // a = home team, b = away team (set that way in compute_head_to_head).
+  function seriesLine(c: GameContextBundle): string {
+    const h = c.headToHead;
+    if (h.meetings.length === 0) return "First meeting of the season";
+    if (h.aWins === h.bWins) return `Series tied ${h.aWins}–${h.bWins}`;
+    const name = h.aWins > h.bWins ? c.home : c.away;
+    return `${name} lead the series ${Math.max(h.aWins, h.bWins)}–${Math.min(h.aWins, h.bWins)}`;
+  }
+  const rate = (x: number) => x.toFixed(1);
 
   function goBack() {
     if (typeof history !== "undefined" && history.length > 1) history.back();
@@ -327,6 +361,95 @@
         </div>
       </div>
     </section>
+
+    <!-- ── TIER 2: matchup & team context ────────────────────── -->
+    {#snippet splitCol(name: string, s: TeamSplits)}
+      <div class="calc-col ctx-col">
+        <span class="calc-team">{name}</span>
+        <div class="split-row"><span class="split-tag">Home</span><span class="split-val">{s.home.wins}-{s.home.losses} · {rate(s.home.rsPerGame)}/{rate(s.home.raPerGame)} R</span></div>
+        <div class="split-row"><span class="split-tag">Road</span><span class="split-val">{s.road.wins}-{s.road.losses} · {rate(s.road.rsPerGame)}/{rate(s.road.raPerGame)} R</span></div>
+        {#if s.l10}
+          <div class="split-row"><span class="split-tag">L10</span><span class="split-val">{rate(s.l10.rsPerGame)}/{rate(s.l10.raPerGame)} R over {s.l10.games}</span></div>
+        {/if}
+      </div>
+    {/snippet}
+    {#snippet lineupCol(name: string, spots: LineupSpot[])}
+      <div class="calc-col ctx-col">
+        <span class="calc-team">{name}</span>
+        {#if spots.length > 0}
+          <ol class="lineup">
+            {#each spots as sp}
+              <li><span class="lu-order">{sp.order}</span><span class="lu-name">{sp.name}</span><span class="lu-pos">{sp.position}</span></li>
+            {/each}
+          </ol>
+        {:else}
+          <p class="ctx-empty">Lineup not posted yet.</p>
+        {/if}
+      </div>
+    {/snippet}
+    {#snippet bullpenCol(name: string, bp: Bullpen | null)}
+      <div class="calc-col ctx-col">
+        <span class="calc-team">{name}</span>
+        {#if bp}
+          <div class="bp-stats">
+            <div class="bp-stat"><span class="bp-val">{bp.era.toFixed(2)}</span><span class="bp-lbl">ERA</span></div>
+            <div class="bp-stat"><span class="bp-val">{rate(bp.inningsPitched)}</span><span class="bp-lbl">IP</span></div>
+            <div class="bp-stat"><span class="bp-val">{bp.whip.toFixed(2)}</span><span class="bp-lbl">WHIP</span></div>
+            <div class="bp-stat"><span class="bp-val">{bp.saves}</span><span class="bp-lbl">SV</span></div>
+          </div>
+        {:else}
+          <p class="ctx-empty">Bullpen stats unavailable.</p>
+        {/if}
+      </div>
+    {/snippet}
+
+    {#if contextLoading && !context}
+      <section class="step">
+        <p class="muted"><span class="spinner" aria-hidden="true"></span> Loading matchup context…</p>
+      </section>
+    {:else if context}
+      <section class="step">
+        <div class="step-head"><h2>Season series</h2></div>
+        {#if context.headToHead.meetings.length === 0}
+          <p class="ctx-empty">These teams haven't met yet this season.</p>
+        {:else}
+          <p class="series-lead">{seriesLine(context)}</p>
+          <p class="muted small">Runs this season — {context.home} {context.headToHead.aRuns}, {context.away} {context.headToHead.bRuns}</p>
+          <ul class="meetings">
+            {#each context.headToHead.meetings as m}
+              <li>
+                <span class="m-date">{m.date}</span>
+                <span class="m-score">{m.awayName} {m.awayRuns} @ {m.homeName} {m.homeRuns}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
+      <section class="step">
+        <div class="step-head"><h2>Home / road &amp; recent splits</h2></div>
+        <div class="calc-grid">
+          {@render splitCol(context.away, context.awaySplits)}
+          {@render splitCol(context.home, context.homeSplits)}
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-head"><h2>Probable lineups</h2></div>
+        <div class="calc-grid">
+          {@render lineupCol(context.away, context.lineups.away)}
+          {@render lineupCol(context.home, context.lineups.home)}
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-head"><h2>Bullpen (relief pitching)</h2></div>
+        <div class="calc-grid">
+          {@render bullpenCol(context.away, context.awayBullpen)}
+          {@render bullpenCol(context.home, context.homeBullpen)}
+        </div>
+      </section>
+    {/if}
   {/if}
 </section>
 
@@ -576,6 +699,119 @@
     gap: 6px;
     align-items: center;
     text-align: center;
+  }
+
+  /* TIER 2 CONTEXT */
+  .ctx-col {
+    text-align: left;
+    gap: 8px;
+  }
+  .ctx-empty {
+    font-size: 0.82rem;
+    color: var(--ink-mute);
+    font-style: italic;
+    margin: 4px 0 0;
+  }
+  .series-lead {
+    font-family: var(--serif);
+    font-size: 1.15rem;
+    margin: 0 0 4px;
+  }
+  .meetings {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .meetings li {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    font-size: 0.85rem;
+  }
+  .m-date {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--ink-mute);
+    width: 6.5em;
+    flex-shrink: 0;
+  }
+  .m-score { color: var(--ink-soft); }
+
+  .split-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 0.85rem;
+  }
+  .split-tag {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    width: 3em;
+    flex-shrink: 0;
+  }
+  .split-val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-soft);
+  }
+
+  .lineup {
+    list-style: none;
+    padding: 0;
+    margin: 4px 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .lineup li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 0.85rem;
+  }
+  .lu-order {
+    font-family: var(--mono);
+    color: var(--ink-mute);
+    width: 1.4em;
+    flex-shrink: 0;
+  }
+  .lu-name { color: var(--ink); flex: 1; }
+  .lu-pos {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-mute);
+  }
+
+  .bp-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .bp-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .bp-val {
+    font-family: var(--mono);
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .bp-lbl {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-mute);
   }
 
   @media (max-width: 620px) {
