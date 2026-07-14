@@ -15,6 +15,7 @@ const TEAMS_BASE: &str = "https://statsapi.mlb.com/api/v1/teams";
 const USER_AGENT: &str = "mlb-pe-tauri/0.1 (github.com/adamwickwire/mlb-pe)";
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Game {
     pub game_pk: i64,
     pub date: String, // "YYYY-MM-DD"
@@ -42,6 +43,7 @@ pub enum GameStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PitcherStats {
     pub id: i32,
     pub name: String,

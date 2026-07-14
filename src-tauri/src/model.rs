@@ -578,7 +578,10 @@ pub fn estimate_game_detailed(
     let away_pred = away_os_eff * home_ds_eff * lg_avg_runs;
     let total = home_pred + away_pred;
 
-    let neutral_home_win = log5(home_pyt, away_pyt);
+    // Clamp unconditionally: log5 can return exactly 0 or 1 for degenerate
+    // inputs (e.g. a team with RA=0 over a small sample), which would make
+    // prob_to_american_odds hit its invalid-probability guard and return 0.
+    let neutral_home_win = log5(home_pyt, away_pyt).clamp(1e-9, 1.0 - 1e-9);
     let home_win = if apply_home_field {
         shift_log_odds(neutral_home_win, HOME_FIELD_LOG_ODDS)
     } else {

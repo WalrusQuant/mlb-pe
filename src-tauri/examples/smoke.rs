@@ -1,7 +1,7 @@
 // End-to-end smoke test: hits the live MLB API and runs the model.
 // Run with:  cargo run --example smoke
 
-use mlbpe_lib::mlb_api::{fetch_pitcher_stats, fetch_schedule};
+use mlbpe_lib::mlb_api::{fetch_boxscore, fetch_bullpen, fetch_pitcher_stats, fetch_schedule, fetch_standings};
 use mlbpe_lib::model::{
     compute_recent_form, compute_team_stats, estimate_game, estimate_game_with_pitchers,
     optimize_exponent, PitcherAdj, RECENT_FORM_WINDOW,
@@ -33,6 +33,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (stats, lg_avg) = compute_team_stats(&games, exp);
     eprintln!("Team stats: {} teams; league avg runs/team/game = {:.3}", stats.len(), lg_avg);
+
+    // Exercise the other API endpoints so a regression in any of them surfaces here.
+    eprintln!("Fetching standings...");
+    let standings = fetch_standings(season).await?;
+    eprintln!("  → {} standings rows", standings.len());
+
+    // Boxscore + bullpen: pick the first final game for a real exercise.
+    if let Some(final_game) = games.iter().find(|g| g.is_final()) {
+        eprintln!("Fetching boxscore for gamePk {}...", final_game.game_pk);
+        match fetch_boxscore(final_game.game_pk).await {
+            Ok(lineups) => eprintln!("  → {} home / {} away lineup spots",
+                lineups.home.len(), lineups.away.len()),
+            Err(e) => eprintln!("  → boxscore fetch failed: {e}"),
+        }
+        eprintln!("Fetching bullpens for home team {}...", final_game.home_team_id);
+        match fetch_bullpen(season, final_game.home_team_id).await {
+            Ok(Some(bp)) => eprintln!("  → bullpen ERA {:.2}, IP {:.1}", bp.era, bp.innings_pitched),
+            Ok(None) => eprintln!("  → no bullpen split available"),
+            Err(e) => eprintln!("  → bullpen fetch failed: {e}"),
+        }
+    }
 
     let by_id: std::collections::HashMap<i32, &mlbpe_lib::model::TeamStats> =
         stats.iter().map(|t| (t.team_id, t)).collect();
