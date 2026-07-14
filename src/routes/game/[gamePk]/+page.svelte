@@ -25,13 +25,12 @@
   // preventing a slow older fetch from clobbering the current view.
   let reqId = 0;
 
-  async function load(gamePk: number, opts: {
+  async function load(id: number, gamePk: number, opts: {
     exponent?: number;
     includePitchers: boolean;
     includeHomeField: boolean;
     includeRecentForm: boolean;
   }) {
-    const id = ++reqId;
     loading = true;
     error = null;
     try {
@@ -59,8 +58,7 @@
 
   // Matchup context (H2H, splits, lineups, bullpen) loads independently so the
   // model breakdown above never waits on its network calls. Best-effort.
-  async function loadContext(gamePk: number) {
-    const id = ++reqId;
+  async function loadContext(id: number, gamePk: number) {
     contextLoading = true;
     context = null;
     try {
@@ -77,21 +75,27 @@
   // Reload whenever the route param or query state changes (SvelteKit reuses this
   // component across game→game navigations, so onMount alone wouldn't refire).
   $effect(() => {
+    const id = ++reqId;
     const gamePk = Number(page.params.gamePk);
     const sp = page.url.searchParams;
     if (!Number.isFinite(gamePk)) {
+      bundle = null;
+      context = null;
       error = "Invalid game id.";
       loading = false;
+      contextLoading = false;
       return;
     }
     const expRaw = sp.get("exp");
-    load(gamePk, {
+    // Do not leave the previous matchup visible while this route is loading.
+    bundle = null;
+    load(id, gamePk, {
       exponent: expRaw != null ? Number(expRaw) : undefined,
       includePitchers: sp.get("p") !== "false",
       includeHomeField: sp.get("hf") !== "false",
       includeRecentForm: sp.get("rf") !== "false",
     });
-    loadContext(gamePk);
+    loadContext(id, gamePk);
   });
 
   // a = home team, b = away team (set that way in compute_head_to_head).

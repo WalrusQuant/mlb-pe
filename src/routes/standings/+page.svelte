@@ -17,7 +17,9 @@
     204: "NL East",
     205: "NL Central",
   };
-  const DIVISION_ORDER: number[] = [201, 202, 200, 204, 205, 203]; // E / C / W per league
+  // The grid fills row-by-row: keep AL in the left column and NL in the right,
+  // with matching East / Central / West divisions on each row.
+  const DIVISION_ORDER: number[] = [201, 204, 202, 205, 200, 203];
 
   // League ID → display name.
   const LEAGUE_NAMES: Record<number, string> = {
