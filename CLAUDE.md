@@ -68,7 +68,7 @@ All three toggles live on the Predictions page (apply server-side via `get_predi
 
 3. **Baseball innings notation.** The API returns `inningsPitched: "35.2"` meaning 35 + 2/3 innings, **not** 35.2 decimal. `parse_innings()` in `mlb_api.rs` handles this. If you're computing IP, use that helper, or use the `outs` field (÷ 3).
 
-4. **Date timezones.** Frontend uses `new Date().toISOString().slice(0, 10)` which is UTC. Backend defaults to `Utc::now()`. After ~7 PM CDT this means "today" rolls to tomorrow's date — that's intentional, matches the API's `officialDate`.
+4. **Date timezones.** Frontend `todayISO()` uses `new Date().toLocaleDateString("en-CA")` which yields the user's *local* date as `YYYY-MM-DD`. Backend defaults to `Utc::now()`. The two can differ by a day near midnight UTC; the frontend date picker is the source of truth for which slate the user is asking about. (Previously the frontend used UTC via `toISOString()`, which made "today" roll to tomorrow for US users in the evening — changed to local in the review pass.)
 
 5. **Tauri 2 + Svelte 5 reactivity.** When `invoke()` returns, assign to a `$state` variable directly. Don't await inside a `$derived`.
 

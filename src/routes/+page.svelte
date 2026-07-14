@@ -39,7 +39,7 @@
       for (const t of ts.teams) byName.set(t.team, t);
       teamsByName = byName;
       // Rank teams by Pythagorean win % (descending). 1 = best.
-      const ranked = [...ts.teams].sort((a, b) => b.pythag_win_pct - a.pythag_win_pct);
+      const ranked = [...ts.teams].sort((a, b) => b.pythagWinPct - a.pythagWinPct);
       const ranks = new Map<string, number>();
       ranked.forEach((t, i) => ranks.set(t.team, i + 1));
       rankByName = ranks;
@@ -114,7 +114,7 @@
   function recordFor(teamName: string): string | null {
     const ts = teamsByName.get(teamName);
     if (!ts) return null;
-    const st = standingByTeamId.get(ts.team_id);
+    const st = standingByTeamId.get(ts.teamId);
     if (!st) return null;
     return `${st.wins}-${st.losses}`;
   }
@@ -133,12 +133,12 @@
   }
 
   function rpg(t: TeamStats | undefined): string {
-    if (!t || t.games_played === 0) return "—";
-    return (t.runs_scored / t.games_played).toFixed(1);
+    if (!t || t.gamesPlayed === 0) return "—";
+    return (t.runsScored / t.gamesPlayed).toFixed(1);
   }
   function rapg(t: TeamStats | undefined): string {
-    if (!t || t.games_played === 0) return "—";
-    return (t.runs_allowed / t.games_played).toFixed(1);
+    if (!t || t.gamesPlayed === 0) return "—";
+    return (t.runsAllowed / t.gamesPlayed).toFixed(1);
   }
 
   onMount(load);

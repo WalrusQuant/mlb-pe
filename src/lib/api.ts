@@ -1,10 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   PredictionsBundle,
-  Prediction,
   StandingsBundle,
   TeamStatsBundle,
-  TeamInput,
   GameBreakdownBundle,
   GameContextBundle,
 } from "./types";
@@ -55,38 +53,4 @@ export async function refreshSchedule(season?: number): Promise<number> {
 
 export async function getStandings(season?: number): Promise<StandingsBundle> {
   return await invoke<StandingsBundle>("get_standings", { season });
-}
-
-export async function computeMatchup(
-  home: TeamInput,
-  away: TeamInput,
-  exponent: number,
-  leagueAvgRuns: number,
-): Promise<Prediction> {
-  return await invoke<Prediction>("compute_matchup", {
-    home,
-    away,
-    exponent,
-    leagueAvgRuns,
-  });
-}
-
-export async function pythagCurve(
-  runsScored: number,
-  runsAllowed: number,
-  minExp = 0.5,
-  maxExp = 4.0,
-  steps = 60,
-): Promise<[number, number][]> {
-  return await invoke<[number, number][]>("pythag_curve", {
-    runsScored,
-    runsAllowed,
-    minExp,
-    maxExp,
-    steps,
-  });
-}
-
-export async function americanOdds(prob: number): Promise<number> {
-  return await invoke<number>("american_odds", { prob });
 }

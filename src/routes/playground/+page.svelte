@@ -165,21 +165,21 @@
 
   let rows = $derived.by<Row[]>(() => {
     if (teams.length === 0) return [];
-    const ranked = [...teams].sort((a, b) => b.pythag_win_pct - a.pythag_win_pct);
+    const ranked = [...teams].sort((a, b) => b.pythagWinPct - a.pythagWinPct);
     const rankMap = new Map<number, number>();
-    ranked.forEach((t, i) => rankMap.set(t.team_id, i + 1));
+    ranked.forEach((t, i) => rankMap.set(t.teamId, i + 1));
     return teams.map((t) => ({
-      team_id: t.team_id,
+      team_id: t.teamId,
       team: t.team,
-      rank: rankMap.get(t.team_id) ?? 0,
-      wpct: t.pythag_win_pct,
-      rpg: t.games_played > 0 ? t.runs_scored / t.games_played : 0,
-      rapg: t.games_played > 0 ? t.runs_allowed / t.games_played : 0,
+      rank: rankMap.get(t.teamId) ?? 0,
+      wpct: t.pythagWinPct,
+      rpg: t.gamesPlayed > 0 ? t.runsScored / t.gamesPlayed : 0,
+      rapg: t.gamesPlayed > 0 ? t.runsAllowed / t.gamesPlayed : 0,
       os: t.os,
       ds: t.ds,
-      runs_scored: t.runs_scored,
-      runs_allowed: t.runs_allowed,
-      games_played: t.games_played,
+      runs_scored: t.runsScored,
+      runs_allowed: t.runsAllowed,
+      games_played: t.gamesPlayed,
     }));
   });
 
@@ -230,33 +230,33 @@
 
   function assignSide(side: "home" | "away", t: TeamStats) {
     if (side === "home") {
-      homeId = t.team_id;
-      homeRS = t.runs_scored;
-      homeRA = t.runs_allowed;
-      homeG = t.games_played;
+      homeId = t.teamId;
+      homeRS = t.runsScored;
+      homeRA = t.runsAllowed;
+      homeG = t.gamesPlayed;
     } else {
-      awayId = t.team_id;
-      awayRS = t.runs_scored;
-      awayRA = t.runs_allowed;
-      awayG = t.games_played;
+      awayId = t.teamId;
+      awayRS = t.runsScored;
+      awayRA = t.runsAllowed;
+      awayG = t.gamesPlayed;
     }
   }
 
   function pickHome(t: Row) {
-    const team = teams.find((x) => x.team_id === t.team_id);
+    const team = teams.find((x) => x.teamId === t.team_id);
     if (!team) return;
-    if (awayId === team.team_id) {
+    if (awayId === team.teamId) {
       // Swap if the same team is already on the other side
-      const prevHome = teams.find((x) => x.team_id === homeId);
+      const prevHome = teams.find((x) => x.teamId === homeId);
       if (prevHome) assignSide("away", prevHome);
     }
     assignSide("home", team);
   }
   function pickAway(t: Row) {
-    const team = teams.find((x) => x.team_id === t.team_id);
+    const team = teams.find((x) => x.teamId === t.team_id);
     if (!team) return;
-    if (homeId === team.team_id) {
-      const prevAway = teams.find((x) => x.team_id === awayId);
+    if (homeId === team.teamId) {
+      const prevAway = teams.find((x) => x.teamId === awayId);
       if (prevAway) assignSide("home", prevAway);
     }
     assignSide("away", team);
@@ -264,7 +264,7 @@
 
   function resetTeam(side: "home" | "away") {
     const id = side === "home" ? homeId : awayId;
-    const t = teams.find((x) => x.team_id === id);
+    const t = teams.find((x) => x.teamId === id);
     if (t) assignSide(side, t);
   }
 
@@ -273,10 +273,10 @@
   }
 
   function homeName(): string {
-    return teams.find((t) => t.team_id === homeId)?.team ?? "—";
+    return teams.find((t) => t.teamId === homeId)?.team ?? "—";
   }
   function awayName(): string {
-    return teams.find((t) => t.team_id === awayId)?.team ?? "—";
+    return teams.find((t) => t.teamId === awayId)?.team ?? "—";
   }
 
   onMount(load);

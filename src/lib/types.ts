@@ -180,17 +180,17 @@ export type GameContextBundle = {
 };
 
 export type TeamStats = {
-  team_id: number;
+  teamId: number;
   team: string;
-  runs_scored: number;
-  runs_allowed: number;
-  games_played: number;
-  pythag_win_pct: number;
+  runsScored: number;
+  runsAllowed: number;
+  gamesPlayed: number;
+  pythagWinPct: number;
   os: number;
   ds: number;
-  recent_games: number | null;
-  recent_rs_per_game: number | null;
-  recent_ra_per_game: number | null;
+  recentGames: number | null;
+  recentRsPerGame: number | null;
+  recentRaPerGame: number | null;
 };
 
 export type TeamStatsBundle = {
@@ -199,12 +199,6 @@ export type TeamStatsBundle = {
   leagueAvgRuns: number;
   optimalExponent: number;
   teams: TeamStats[];
-};
-
-export type TeamInput = {
-  runsScored: number;
-  runsAllowed: number;
-  games: number;
 };
 
 export type TeamStanding = {

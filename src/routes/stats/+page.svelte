@@ -56,26 +56,26 @@
     for (const s of standings) stById.set(s.teamId, s);
     const out: Joined[] = [];
     for (const t of teams) {
-      const st = stById.get(t.team_id);
+      const st = stById.get(t.teamId);
       if (!st) continue;
-      const gp = t.games_played;
+      const gp = t.gamesPlayed;
       if (gp === 0) continue;
-      const rpg = t.runs_scored / gp;
-      const rapg = t.runs_allowed / gp;
+      const rpg = t.runsScored / gp;
+      const rapg = t.runsAllowed / gp;
       const net_season = rpg - rapg;
       const actual_pct = st.wins + st.losses > 0 ? st.wins / (st.wins + st.losses) : 0;
-      const recent_games = t.recent_games;
-      const recent_rs = t.recent_rs_per_game;
-      const recent_ra = t.recent_ra_per_game;
+      const recent_games = t.recentGames;
+      const recent_rs = t.recentRsPerGame;
+      const recent_ra = t.recentRaPerGame;
       const net_recent = recent_rs != null && recent_ra != null ? recent_rs - recent_ra : null;
       const swing = net_recent != null ? net_recent - net_season : null;
       out.push({
-        team_id: t.team_id,
+        team_id: t.teamId,
         team: t.team,
         games_played: gp,
         actual_pct,
-        pythag_pct: t.pythag_win_pct,
-        luck: actual_pct - t.pythag_win_pct,
+        pythag_pct: t.pythagWinPct,
+        luck: actual_pct - t.pythagWinPct,
         rpg,
         rapg,
         os: t.os,

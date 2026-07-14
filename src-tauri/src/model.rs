@@ -3,11 +3,12 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::mlb_api::Game;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TeamStats {
     pub team_id: i32,
     pub team: String,
