@@ -942,4 +942,160 @@ mod tests {
         assert!(bd.home.pitcher_applied && bd.home.recent_applied);
         assert!(bd.home_field_applied && bd.home_field_delta > 0.0);
     }
+
+    // ── Exponent fitter ──────────────────────────────────────────────────
+
+    #[test]
+    fn optimize_exponent_recovers_reasonable_value() {
+        // Generate a synthetic season where each team's wins follow a known
+        // Pythagorean relationship with a target exponent of ~1.83. The fitter
+        // should recover a value near 1.83, not pinned to the 0.5/5.0 boundary.
+        let target_exp = 1.83;
+        let teams = [
+            (1, "Elite", 800, 650),
+            (2, "Good",  750, 700),
+            (3, "Above", 720, 700),
+            (4, "Below", 700, 720),
+            (5, "Poor",  700, 750),
+            (6, "Bad",   650, 800),
+        ];
+        // For each team, compute its Pythag win% at target_exp, then generate
+        // 162 games of W/L whose count matches that win%.
+        let mut games = vec![];
+        let mut pk = 1i64;
+        for i in 0..teams.len() {
+            for j in (i + 1)..teams.len() {
+                let (hi, hn, hrs, hra) = teams[i];
+                let (ai, an, ars, ara) = teams[j];
+                let ph = pythag_win_pct(hrs as f64, hra as f64, target_exp);
+                // 10-game series; home team wins round(10 * log5(ph, pa)) games.
+                let pa = pythag_win_pct(ars as f64, ara as f64, target_exp);
+                let p_matchup = log5(ph, pa);
+                let h_wins = (10.0 * p_matchup).round() as i32;
+                for g in 0..10 {
+                    let (hr, ar) = if g < h_wins { (5, 3) } else { (3, 5) };
+                    games.push(fin(pk, "2026-04-01", hi, hn, hr, ai, an, ar));
+                    pk += 1;
+                }
+            }
+        }
+        let exp = optimize_exponent(&games);
+        assert!(exp > 0.5 && exp < 5.0, "exponent pinned to boundary: {exp}");
+    }
+
+    #[test]
+    fn optimize_exponent_falls_back_below_two_teams() {
+        // A single team's games can't fit a league-wide exponent — fall back to 2.0.
+        let games = vec![fin(1, "2026-04-01", 1, "A", 5, 1, "A", 3)];
+        let exp = optimize_exponent(&games);
+        assert!((exp - 2.0).abs() < 1e-9);
+        // Empty input too.
+        assert!((optimize_exponent(&[]) - 2.0).abs() < 1e-9);
+    }
+
+    // ── Pitcher blend ───────────────────────────────────────────────────
+
+    #[test]
+    fn apply_pitcher_blends_era_with_team_ra() {
+        // 0.6 * 3.0 + 0.4 * 4.5 = 1.8 + 1.8 = 3.6
+        let adj = Some(PitcherAdj { era: 3.0, innings_pitched: 100.0 });
+        let eff = apply_pitcher(4.5, adj);
+        assert!((eff - 3.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn apply_pitcher_boundary_at_min_ip() {
+        // At exactly MIN_IP_FOR_ADJUSTMENT (20.0) the adjustment applies…
+        let at = Some(PitcherAdj { era: 3.0, innings_pitched: 20.0 });
+        assert!((apply_pitcher(4.5, at) - 3.6).abs() < 1e-9);
+        // …just below it (19.9) it falls back to the team RA.
+        let below = Some(PitcherAdj { era: 3.0, innings_pitched: 19.9 });
+        assert!((apply_pitcher(4.5, below) - 4.5).abs() < 1e-9);
+        // None also falls back.
+        assert!((apply_pitcher(4.5, None) - 4.5).abs() < 1e-9);
+    }
+
+    // ── Recent-form window count ────────────────────────────────────────
+
+    #[test]
+    fn compute_recent_form_takes_exactly_window_games() {
+        // 25 completed games → the L20 window should contain exactly 20.
+        let mut games = vec![];
+        for i in 0..25 {
+            games.push(fin(i as i64 + 1, &format!("2026-04-{:02}", i + 1), 10, "A", 4, 20, "B", 3));
+        }
+        let form = compute_recent_form(&games, RECENT_FORM_WINDOW);
+        let r = form.get(&10).expect("team 10 should have recent form");
+        assert_eq!(r.games, 20, "expected exactly 20 games in the window");
+    }
+
+    // ── Numerical edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn pythag_handles_zero_runs() {
+        // RS=0, RA=0 → the 0^x/(0^x+0^x) degenerate path must not panic or NaN.
+        let p = pythag_win_pct(0.0, 0.0, 1.83);
+        assert!(p.is_finite(), "pythag(0,0) must be finite, got {p}");
+        // RS=0, RA>0 → team never wins.
+        assert!((pythag_win_pct(0.0, 700.0, 2.0) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn log5_handles_degenerate_inputs() {
+        // log5 must not panic or produce NaN at the 0/1 extremes.
+        assert!(log5(0.0, 0.5).is_finite());
+        assert!(log5(1.0, 0.5).is_finite());
+        assert!((log5(0.5, 0.5) - 0.5).abs() < 1e-9);
+    }
+
+    // ── Spec invariants ─────────────────────────────────────────────────
+
+    #[test]
+    fn home_field_does_not_affect_predicted_runs() {
+        // Spec step 6: HFA shifts win probability only — predicted runs are
+        // OS×DS×league-avg and must be identical whether HFA is on or off.
+        let home = TeamStats {
+            team_id: 1, team: "H".into(), runs_scored: 480, runs_allowed: 400,
+            games_played: 100, pythag_win_pct: 0.6, os: 1.1, ds: 0.9,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let away = TeamStats {
+            team_id: 2, team: "A".into(), runs_scored: 420, runs_allowed: 450,
+            games_played: 100, pythag_win_pct: 0.45, os: 0.95, ds: 1.05,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let with_hfa =
+            estimate_game_with_pitchers(&home, &away, 4.5, None, None, None, None, 1.83, true);
+        let without_hfa =
+            estimate_game_with_pitchers(&home, &away, 4.5, None, None, None, None, 1.83, false);
+        assert!((with_hfa.home_pred_runs - without_hfa.home_pred_runs).abs() < 1e-9);
+        assert!((with_hfa.away_pred_runs - without_hfa.away_pred_runs).abs() < 1e-9);
+        // But win prob DOES differ (home gets the bump).
+        assert!(with_hfa.home_win_prob > without_hfa.home_win_prob);
+    }
+
+    #[test]
+    fn pitcher_operates_on_recency_blended_ra() {
+        // Spec: the pitcher blend operates on the L20-blended RA, not the raw
+        // season RA. With recent form moving RA one way and the pitcher ERA
+        // another, effective_ra must equal 0.6*era + 0.4*blended_ra.
+        let home = TeamStats {
+            team_id: 1, team: "H".into(), runs_scored: 480, runs_allowed: 400,
+            games_played: 100, pythag_win_pct: 0.6, os: 1.1, ds: 0.9,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let away = TeamStats {
+            team_id: 2, team: "A".into(), runs_scored: 420, runs_allowed: 450,
+            games_played: 100, pythag_win_pct: 0.45, os: 0.95, ds: 1.05,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        // Season RA/G for home = 400/100 = 4.0. Recent RA/G = 3.0 → blended =
+        // 0.6*4.0 + 0.4*3.0 = 3.6. Pitcher ERA 2.0 → eff = 0.6*2.0 + 0.4*3.6 = 2.64.
+        // If the pitcher wrongly operated on season RA, we'd get 0.6*2.0+0.4*4.0 = 2.8.
+        let hr = Some(RecentForm { games: 20, rs_per_game: 5.0, ra_per_game: 3.0 });
+        let hp = Some(PitcherAdj { era: 2.0, innings_pitched: 100.0 });
+        let (_, bd) = estimate_game_detailed(&home, &away, 4.5, hp, None, hr, None, 1.83, false);
+        assert!((bd.home.effective_ra_per_game - 2.64).abs() < 1e-6,
+            "expected 2.64 (pitcher on blended RA), got {}", bd.home.effective_ra_per_game);
+    }
 }
