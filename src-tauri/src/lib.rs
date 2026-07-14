@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::State;
 
 use mlb_api::{
@@ -17,11 +17,10 @@ use mlb_api::{
     Game, Lineups, PitcherStats, TeamStanding,
 };
 use model::{
-    compute_head_to_head, compute_recent_form, compute_splits, compute_team_stats, estimate_game,
-    estimate_game_detailed, estimate_game_with_pitchers, optimize_exponent, prob_to_american_odds,
-    pythag_win_pct, round_to, GameRow, HeadToHead, MatchupBreakdown, PitcherAdj, PitcherInfo,
-    Prediction, RecentForm, RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT,
-    MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
+    compute_head_to_head, compute_recent_form, compute_splits, compute_team_stats,
+    estimate_game_detailed, estimate_game_with_pitchers, optimize_exponent, round_to, GameRow,
+    HeadToHead, MatchupBreakdown, PitcherAdj, PitcherInfo, Prediction, RecentForm, RecentInfo,
+    TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -38,7 +37,7 @@ pub struct AppState {
 struct Cache {
     schedule: Option<(i32, Vec<Game>, Instant)>,
     optimal_exp: HashMap<i32, f64>,
-    pitchers: HashMap<i32, (PitcherStats, Instant)>,
+    pitchers: HashMap<(i32, i32), (PitcherStats, Instant)>,
     standings: Option<(i32, Vec<TeamStanding>, Instant)>,
     boxscores: HashMap<i64, (Lineups, Instant)>,
     bullpens: HashMap<(i32, i32), (Bullpen, Instant)>,
@@ -98,7 +97,7 @@ impl AppState {
         {
             let cache = self.cache.lock().unwrap();
             for id in ids {
-                if let Some((ps, t)) = cache.pitchers.get(id) {
+                if let Some((ps, t)) = cache.pitchers.get(&(season, *id)) {
                     if t.elapsed() < PITCHER_CACHE_TTL {
                         found.insert(*id, ps.clone());
                         continue;
@@ -116,14 +115,14 @@ impl AppState {
             for id in &missing {
                 match fetched.get(id) {
                     Some(ps) => {
-                        cache.pitchers.insert(*id, (ps.clone(), now));
+                        cache.pitchers.insert((season, *id), (ps.clone(), now));
                     }
                     None => {
                         // We asked for this pitcher but the API returned no stats
                         // (e.g. mid-season trade, IL stint with no data). Drop any
                         // stale cached entry so we don't keep refetching every call —
                         // they'll be re-added if/when stats reappear.
-                        cache.pitchers.remove(id);
+                        cache.pitchers.remove(&(season, *id));
                     }
                 }
             }
@@ -597,67 +596,6 @@ async fn get_game_context(
     })
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamInput {
-    pub runs_scored: f64,
-    pub runs_allowed: f64,
-    pub games: f64,
-}
-
-#[tauri::command]
-fn compute_matchup(
-    home: TeamInput,
-    away: TeamInput,
-    exponent: f64,
-    league_avg_runs: f64,
-) -> Prediction {
-    let h = make_synth_team(&home, exponent, league_avg_runs);
-    let a = make_synth_team(&away, exponent, league_avg_runs);
-    estimate_game(&h, &a, league_avg_runs)
-}
-
-#[tauri::command]
-fn pythag_curve(
-    runs_scored: f64,
-    runs_allowed: f64,
-    min_exp: f64,
-    max_exp: f64,
-    steps: u32,
-) -> Vec<(f64, f64)> {
-    // Returns [(exponent, win%)] over [min_exp, max_exp] — for the sensitivity chart.
-    let steps = steps.max(2);
-    let step = (max_exp - min_exp) / (steps as f64 - 1.0);
-    (0..steps)
-        .map(|i| {
-            let e = min_exp + step * i as f64;
-            (round_to(e, 4), round_to(pythag_win_pct(runs_scored, runs_allowed, e), 6))
-        })
-        .collect()
-}
-
-#[tauri::command]
-fn american_odds(prob: f64) -> i32 {
-    prob_to_american_odds(prob)
-}
-
-fn make_synth_team(t: &TeamInput, exponent: f64, lg_avg_runs: f64) -> TeamStats {
-    let gp = if t.games <= 0.0 { 1.0 } else { t.games };
-    TeamStats {
-        team_id: 0,
-        team: String::new(),
-        runs_scored: t.runs_scored as i32,
-        runs_allowed: t.runs_allowed as i32,
-        games_played: gp as i32,
-        pythag_win_pct: pythag_win_pct(t.runs_scored, t.runs_allowed, exponent),
-        os: (t.runs_scored / gp) / lg_avg_runs,
-        ds: (t.runs_allowed / gp) / lg_avg_runs,
-        recent_games: None,
-        recent_rs_per_game: None,
-        recent_ra_per_game: None,
-    }
-}
-
 fn default_season() -> i32 {
     Utc::now()
         .date_naive()
@@ -767,9 +705,6 @@ pub fn run() {
             get_optimal_exponent,
             refresh_schedule,
             get_standings,
-            compute_matchup,
-            pythag_curve,
-            american_odds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

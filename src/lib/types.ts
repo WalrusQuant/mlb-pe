@@ -218,8 +218,8 @@ export type TeamStanding = {
   gamesBack: string;
   wildCardRank: number | null;
   wildCardGamesBack: string;
-  divisionRank: number;
-  leagueRank: number;
+  divisionRank: number | null;
+  leagueRank: number | null;
   runsScored: number;
   runsAllowed: number;
   runDifferential: number;

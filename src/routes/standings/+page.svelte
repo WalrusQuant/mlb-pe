@@ -46,7 +46,7 @@
     }
     // Each division: sort by division rank.
     for (const div in groups) {
-      groups[div].sort((a, b) => a.divisionRank - b.divisionRank);
+      groups[div].sort((a, b) => (a.divisionRank ?? 99) - (b.divisionRank ?? 99));
     }
     return groups;
   });

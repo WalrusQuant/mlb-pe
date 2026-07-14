@@ -2,8 +2,10 @@
 // Mirrors what baseballr::mlb_schedule() wraps in R, but pure Rust.
 
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 
 const SCHEDULE_BASE: &str = "https://statsapi.mlb.com/api/v1/schedule";
 const PEOPLE_BASE: &str = "https://statsapi.mlb.com/api/v1/people";
@@ -229,11 +231,20 @@ pub async fn fetch_bullpen(season: i32, team_id: i32) -> Result<Option<Bullpen>>
     }))
 }
 
-fn http_client() -> Result<reqwest::Client> {
+// One shared client for the whole process — keeps the connection pool and TLS
+// state alive across calls and bakes in the timeout so a stalled MLB endpoint
+// can never hang a Tauri command forever.
+static HTTP: Lazy<Result<reqwest::Client>> = Lazy::new(|| {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .context("failed to build http client")
+});
+
+fn http_client() -> Result<&'static reqwest::Client> {
+    HTTP.as_ref().map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 // Baseball notation: "35.2" means 35 + 2/3 innings (NOT 35.2 decimal).
@@ -523,8 +534,8 @@ pub struct TeamStanding {
     pub games_back: String,  // "-" for division leader, else like "2.5"
     pub wild_card_rank: Option<i32>,
     pub wild_card_games_back: String,
-    pub division_rank: i32,
-    pub league_rank: i32,
+    pub division_rank: Option<i32>,
+    pub league_rank: Option<i32>,
     pub runs_scored: i32,
     pub runs_allowed: i32,
     pub run_differential: i32,
@@ -582,8 +593,8 @@ pub async fn fetch_standings(season: i32) -> Result<Vec<TeamStanding>> {
                 games_back: tr.games_back,
                 wild_card_rank: tr.wild_card_rank.and_then(|s| s.parse().ok()),
                 wild_card_games_back: tr.wild_card_games_back,
-                division_rank: tr.division_rank.parse().unwrap_or(0),
-                league_rank: tr.league_rank.parse().unwrap_or(0),
+                division_rank: tr.division_rank.parse().ok(),
+                league_rank: tr.league_rank.parse().ok(),
                 runs_scored: tr.runs_scored,
                 runs_allowed: tr.runs_allowed,
                 run_differential: tr.run_differential,
