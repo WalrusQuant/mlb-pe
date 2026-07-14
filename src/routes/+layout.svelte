@@ -27,9 +27,13 @@
         <span class="brand-sub">Expectation Model</span>
       </span>
     </a>
-    <nav>
-      {#each links as link}
-        <a class:active={isActive(link.href)} href={link.href}>{link.label}</a>
+    <nav aria-label="Primary">
+      {#each links as link (link.href)}
+        <a
+          class:active={isActive(link.href)}
+          aria-current={isActive(link.href) ? "page" : undefined}
+          href={link.href}
+        >{link.label}</a>
       {/each}
     </nav>
   </div>

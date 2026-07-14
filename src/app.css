@@ -153,6 +153,11 @@ select:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .shell {
   max-width: 1600px;

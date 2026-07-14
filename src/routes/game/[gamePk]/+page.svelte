@@ -20,6 +20,10 @@
   let recordById = $state<Map<number, string>>(new Map());
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // Request token: bumped on every navigation. Async loads capture the value
+  // and bail before writing state if a newer navigation superseded them,
+  // preventing a slow older fetch from clobbering the current view.
+  let reqId = 0;
 
   async function load(gamePk: number, opts: {
     exponent?: number;
@@ -27,19 +31,24 @@
     includeHomeField: boolean;
     includeRecentForm: boolean;
   }) {
+    const id = ++reqId;
     loading = true;
     error = null;
     try {
-      bundle = await getGameBreakdown({ gamePk, ...opts });
+      const b = await getGameBreakdown({ gamePk, ...opts });
+      if (id !== reqId) return;
+      bundle = b;
     } catch (e) {
+      if (id !== reqId) return;
       error = String(e);
       bundle = null;
     } finally {
-      loading = false;
+      if (id === reqId) loading = false;
     }
     // Records are secondary context — a standings outage shouldn't blank the page.
     try {
       const st = await getStandings();
+      if (id !== reqId) return;
       const rec = new Map<number, string>();
       for (const t of st.teams) rec.set(t.teamId, `${t.wins}-${t.losses}`);
       recordById = rec;
@@ -51,14 +60,17 @@
   // Matchup context (H2H, splits, lineups, bullpen) loads independently so the
   // model breakdown above never waits on its network calls. Best-effort.
   async function loadContext(gamePk: number) {
+    const id = ++reqId;
     contextLoading = true;
     context = null;
     try {
-      context = await getGameContext({ gamePk });
+      const c = await getGameContext({ gamePk });
+      if (id !== reqId) return;
+      context = c;
     } catch {
       /* best-effort — leave context null */
     } finally {
-      contextLoading = false;
+      if (id === reqId) contextLoading = false;
     }
   }
 
@@ -378,7 +390,7 @@
         <span class="calc-team">{name}</span>
         {#if spots.length > 0}
           <ol class="lineup">
-            {#each spots as sp}
+            {#each spots as sp (sp.order)}
               <li><span class="lu-order">{sp.order}</span><span class="lu-name">{sp.name}</span><span class="lu-pos">{sp.position}</span></li>
             {/each}
           </ol>
@@ -416,7 +428,7 @@
           <p class="series-lead">{seriesLine(context)}</p>
           <p class="muted small">Runs this season — {context.home} {context.headToHead.aRuns}, {context.away} {context.headToHead.bRuns}</p>
           <ul class="meetings">
-            {#each context.headToHead.meetings as m}
+            {#each context.headToHead.meetings as m (m.gamePk)}
               <li>
                 <span class="m-date">{m.date}</span>
                 <span class="m-score">{m.awayName} {m.awayRuns} @ {m.homeName} {m.homeRuns}</span>

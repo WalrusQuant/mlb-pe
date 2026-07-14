@@ -198,6 +198,7 @@
         class:on={includePitchers}
         role="switch"
         aria-checked={includePitchers}
+        aria-label="Pitcher adjustment"
         onclick={() => { includePitchers = !includePitchers; load(); }}
       >
         <span class="thumb"></span>
@@ -215,6 +216,7 @@
         class:on={includeHomeField}
         role="switch"
         aria-checked={includeHomeField}
+        aria-label="Home field advantage"
         onclick={() => { includeHomeField = !includeHomeField; load(); }}
       >
         <span class="thumb"></span>
@@ -232,6 +234,7 @@
         class:on={includeRecentForm}
         role="switch"
         aria-checked={includeRecentForm}
+        aria-label="Recent form"
         onclick={() => { includeRecentForm = !includeRecentForm; load(); }}
       >
         <span class="thumb"></span>
@@ -287,11 +290,13 @@
       </div>
     {:else}
       <div class="matchup-grid">
-        {#each taggedGames as g}
+        {#each taggedGames as g (g.gamePk)}
           {@const awayTeam = teamsByName.get(g.away)}
           {@const homeTeam = teamsByName.get(g.home)}
           {@const awayWin = g.awayWinProb >= 0.5}
           {@const homeWin = g.homeWinProb >= 0.5}
+          {@const awayRec = recordFor(g.away)}
+          {@const homeRec = recordFor(g.home)}
           <a class="matchup-link" href={gameHref(g.gamePk)} aria-label="{g.away} at {g.home} — full breakdown">
           <article class="card matchup">
             {#if g.gameTag}
@@ -304,7 +309,7 @@
                 <h2 class="tname">{g.away}</h2>
                 <span class="role">
                   Away
-                  {#if recordFor(g.away)}<span class="record">({recordFor(g.away)})</span>{/if}
+                  {#if awayRec}<span class="record">({awayRec})</span>{/if}
                 </span>
                 {#if g.awayPitcher}
                   <div class="pitcher" class:pitcher-faded={!g.awayPitcher.applied}>
@@ -378,7 +383,7 @@
                 <h2 class="tname">{g.home}</h2>
                 <span class="role">
                   Home
-                  {#if recordFor(g.home)}<span class="record">({recordFor(g.home)})</span>{/if}
+                  {#if homeRec}<span class="record">({homeRec})</span>{/if}
                 </span>
                 {#if g.homePitcher}
                   <div class="pitcher" class:pitcher-faded={!g.homePitcher.applied}>

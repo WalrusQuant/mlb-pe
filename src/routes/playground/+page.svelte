@@ -31,6 +31,10 @@
   let homeRecentRAG = $state<number | null>(null);
   let awayRecentRSG = $state<number | null>(null);
   let awayRecentRAG = $state<number | null>(null);
+  // Recent sample size per side — gates the blend via MIN_RECENT_GAMES,
+  // matching model.rs::compute_recent_form's minimum-window guard.
+  let homeRecentGames = $state<number | null>(null);
+  let awayRecentGames = $state<number | null>(null);
   // Master toggles: when off, the corresponding inputs are kept but ignored.
   let applyPitchers = $state(true);
   let applyHomeField = $state(true);
@@ -41,6 +45,7 @@
   const MIN_IP_FOR_ADJUSTMENT = 20;
   const HOME_FIELD_LOG_ODDS = 0.1603;
   const RECENT_FORM_WEIGHT = 0.4;
+  const MIN_RECENT_GAMES = 10;
 
   function shiftLogOdds(p: number, delta: number): number {
     const clamped = Math.max(1e-9, Math.min(1 - 1e-9, p));
@@ -48,10 +53,17 @@
     return 1 / (1 + Math.exp(-lo));
   }
 
-  // Mirror of model.rs::blend — falls back to seasonRate if the user hasn't
-  // supplied a recent rate or the toggle is off.
-  function blendRate(seasonRate: number, recentRate: number | null): number {
-    if (!applyRecentForm || recentRate === null || recentRate <= 0) return seasonRate;
+  // Mirror of model.rs::blend — falls back to seasonRate if the toggle is off,
+  // the user hasn't supplied a recent rate, or the recent sample is below
+  // MIN_RECENT_GAMES (matching the backend's minimum-window guard).
+  function blendRate(
+    seasonRate: number,
+    recentRate: number | null,
+    recentGames: number | null,
+  ): number {
+    if (!applyRecentForm || recentRate === null || (recentGames ?? 0) < MIN_RECENT_GAMES) {
+      return seasonRate;
+    }
     return RECENT_FORM_WEIGHT * recentRate + (1 - RECENT_FORM_WEIGHT) * seasonRate;
   }
 
@@ -94,10 +106,10 @@
     const awaySeasonRSG = awayG > 0 ? awayRS / awayG : 4.5;
     const homeSeasonRAG = homeG > 0 ? homeRA / homeG : 4.5;
     const awaySeasonRAG = awayG > 0 ? awayRA / awayG : 4.5;
-    const homeRSG = blendRate(homeSeasonRSG, homeRecentRSG);
-    const awayRSG = blendRate(awaySeasonRSG, awayRecentRSG);
-    const homeRAGBlended = blendRate(homeSeasonRAG, homeRecentRAG);
-    const awayRAGBlended = blendRate(awaySeasonRAG, awayRecentRAG);
+    const homeRSG = blendRate(homeSeasonRSG, homeRecentRSG, homeRecentGames);
+    const awayRSG = blendRate(awaySeasonRSG, awayRecentRSG, awayRecentGames);
+    const homeRAGBlended = blendRate(homeSeasonRAG, homeRecentRAG, homeRecentGames);
+    const awayRAGBlended = blendRate(awaySeasonRAG, awayRecentRAG, awayRecentGames);
     const homeRAEff = applyPitcher(homeRAGBlended, homePitcherERA, homePitcherIP);
     const awayRAEff = applyPitcher(awayRAGBlended, awayPitcherERA, awayPitcherIP);
     return { homeRSG, awayRSG, homeRAEff, awayRAEff };
@@ -135,7 +147,7 @@
     const points: { x: number; y: number }[] = [];
     const steps = 80;
     const min = 0.5;
-    const max = 4.0;
+    const max = 5.0;
     const { homeRSG, awayRSG, homeRAEff, awayRAEff } = rates;
     for (let i = 0; i < steps; i++) {
       const e = min + ((max - min) * i) / (steps - 1);
@@ -297,7 +309,7 @@
       .join(" ");
   });
   let markerX = $derived(
-    PX + ((CW - PX * 2) * (exponent - 0.5)) / (4.0 - 0.5),
+    PX + ((CW - PX * 2) * (exponent - 0.5)) / (5.0 - 0.5),
   );
   let markerY = $derived(CH - PY - (CH - PY * 2) * result.homeWin);
 
@@ -341,13 +353,13 @@
           <table>
             <thead>
               <tr>
-                <th class="num sortable" onclick={() => setSort("rank")}>#{sortArrow("rank")}</th>
-                <th class="team-col sortable" onclick={() => setSort("team")}>Team{sortArrow("team")}</th>
-                <th class="num sortable" onclick={() => setSort("wpct")}>W%{sortArrow("wpct")}</th>
-                <th class="num sortable" onclick={() => setSort("rpg")}>R/G{sortArrow("rpg")}</th>
-                <th class="num sortable" onclick={() => setSort("rapg")}>RA/G{sortArrow("rapg")}</th>
-                <th class="num sortable" onclick={() => setSort("os")}>OS{sortArrow("os")}</th>
-                <th class="num sortable" onclick={() => setSort("ds")}>DS{sortArrow("ds")}</th>
+                <th class="num sortable"><button onclick={() => setSort("rank")}>#{sortArrow("rank")}</button></th>
+                <th class="team-col sortable"><button onclick={() => setSort("team")}>Team{sortArrow("team")}</button></th>
+                <th class="num sortable"><button onclick={() => setSort("wpct")}>W%{sortArrow("wpct")}</button></th>
+                <th class="num sortable"><button onclick={() => setSort("rpg")}>R/G{sortArrow("rpg")}</button></th>
+                <th class="num sortable"><button onclick={() => setSort("rapg")}>RA/G{sortArrow("rapg")}</button></th>
+                <th class="num sortable"><button onclick={() => setSort("os")}>OS{sortArrow("os")}</button></th>
+                <th class="num sortable"><button onclick={() => setSort("ds")}>DS{sortArrow("ds")}</button></th>
                 <th class="pick">Pick</th>
               </tr>
             </thead>
@@ -368,12 +380,14 @@
                       class="pill"
                       class:active={isHome}
                       title="Set as Home"
+                      aria-label={`Set ${r.team} as home`}
                       onclick={() => pickHome(r)}
                     >H</button>
                     <button
                       class="pill"
                       class:active={isAway}
                       title="Set as Away"
+                      aria-label={`Set ${r.team} as away`}
                       onclick={() => pickAway(r)}
                     >A</button>
                   </td>
@@ -412,6 +426,7 @@
                 class:on={applyPitchers}
                 role="switch"
                 aria-checked={applyPitchers}
+                aria-label="Pitcher adjustment"
                 onclick={() => applyPitchers = !applyPitchers}
               >
                 <span class="thumb"></span>
@@ -429,6 +444,7 @@
                 class:on={applyHomeField}
                 role="switch"
                 aria-checked={applyHomeField}
+                aria-label="Home field advantage"
                 onclick={() => applyHomeField = !applyHomeField}
               >
                 <span class="thumb"></span>
@@ -446,6 +462,7 @@
                 class:on={applyRecentForm}
                 role="switch"
                 aria-checked={applyRecentForm}
+                aria-label="Recent form"
                 onclick={() => applyRecentForm = !applyRecentForm}
               >
                 <span class="thumb"></span>
@@ -500,7 +517,7 @@
               <div class="pitcher-row">
                 <span class="lbl">
                   Recent Form (L20)
-                  <InfoTip text="Optional. If set, blends 60% season + 40% these L20 rates. Leave blank to use season only." />
+                  <InfoTip text="Optional. Blends 60% season + 40% these L20 rates. Needs at least 10 games or the season rate is used. Leave blank to use season only." />
                 </span>
                 <div class="pitcher-fields">
                   <label>
@@ -513,7 +530,12 @@
                     <input type="number" min="0" step="0.1" placeholder="—"
                       bind:value={awayRecentRAG} />
                   </label>
-                  <button class="ghost small" onclick={() => { awayRecentRSG = null; awayRecentRAG = null; }}>
+                  <label>
+                    <span>G</span>
+                    <input type="number" min="0" step="1" placeholder="20"
+                      bind:value={awayRecentGames} />
+                  </label>
+                  <button class="ghost small" onclick={() => { awayRecentRSG = null; awayRecentRAG = null; awayRecentGames = null; }}>
                     Clear
                   </button>
                 </div>
@@ -570,7 +592,7 @@
               <div class="pitcher-row">
                 <span class="lbl">
                   Recent Form (L20)
-                  <InfoTip text="Optional. If set, blends 60% season + 40% these L20 rates. Leave blank to use season only." />
+                  <InfoTip text="Optional. Blends 60% season + 40% these L20 rates. Needs at least 10 games or the season rate is used. Leave blank to use season only." />
                 </span>
                 <div class="pitcher-fields">
                   <label>
@@ -583,7 +605,12 @@
                     <input type="number" min="0" step="0.1" placeholder="—"
                       bind:value={homeRecentRAG} />
                   </label>
-                  <button class="ghost small" onclick={() => { homeRecentRSG = null; homeRecentRAG = null; }}>
+                  <label>
+                    <span>G</span>
+                    <input type="number" min="0" step="1" placeholder="20"
+                      bind:value={homeRecentGames} />
+                  </label>
+                  <button class="ghost small" onclick={() => { homeRecentRSG = null; homeRecentRAG = null; homeRecentGames = null; }}>
                     Clear
                   </button>
                 </div>
@@ -614,13 +641,13 @@
           <input
             type="range"
             min="0.5"
-            max="4.0"
+            max="5.0"
             step="0.01"
             bind:value={exponent}
             class="range"
           />
           <div class="ticks">
-            <span>0.5</span><span>1.0</span><span>1.5</span><span>2.0</span><span>2.5</span><span>3.0</span><span>3.5</span><span>4.0</span>
+            <span>0.5</span><span>1.0</span><span>1.5</span><span>2.0</span><span>2.5</span><span>3.0</span><span>3.5</span><span>4.0</span><span>4.5</span><span>5.0</span>
           </div>
         </div>
 
@@ -639,7 +666,15 @@
             </div>
             <div class="result-block">
               <span class="lbl">League Avg Runs</span>
-              <input type="number" step="0.05" min="3" max="6" bind:value={leagueAvgRuns} class="lgavg" />
+              <input
+                type="number"
+                step="0.05"
+                min="3"
+                max="6"
+                bind:value={leagueAvgRuns}
+                onchange={() => { if (!Number.isFinite(leagueAvgRuns) || leagueAvgRuns <= 0) leagueAvgRuns = 4.5; }}
+                class="lgavg"
+              />
               <span class="subtle small">per team / game</span>
             </div>
             <div class="result-block">
@@ -760,6 +795,14 @@
   }
   .team-list th.sortable:hover {
     color: var(--ink);
+  }
+  .team-list th.sortable button {
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+    cursor: pointer;
   }
   .team-list th.num,
   .team-list td.num {
