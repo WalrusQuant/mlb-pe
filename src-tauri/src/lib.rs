@@ -20,8 +20,8 @@ use mlb_api::{
 use model::{
     compute_head_to_head, compute_recent_form, compute_splits, compute_team_stats,
     estimate_game_detailed, estimate_game_with_pitchers, optimize_exponent, round_to, GameRow,
-    HeadToHead, MatchupBreakdown, PitcherAdj, PitcherInfo, Prediction, RecentForm, RecentInfo,
-    TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
+    HeadToHead, MatchupBreakdown, NextStartCard, PitcherAdj, PitcherInfo, Prediction, RecentForm,
+    RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
 use division_race::{build_division_race, WlOverride, DEFAULT_N_SIMS, DEFAULT_SEED};
 
@@ -43,6 +43,7 @@ struct Cache {
     standings: Option<(i32, Vec<TeamStanding>, Instant)>,
     boxscores: HashMap<i64, (Lineups, Instant)>,
     bullpens: HashMap<(i32, i32), (Bullpen, Instant)>,
+    next_starts: HashMap<String, (HashMap<i32, NextStartCard>, Instant)>,
 }
 
 impl AppState {
@@ -131,6 +132,56 @@ impl AppState {
             found.extend(fetched);
         }
         Ok(found)
+    }
+
+    async fn get_next_starts(&self, date: &str) -> HashMap<i32, NextStartCard> {
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some((cards, t)) = cache.next_starts.get(date) {
+                if t.elapsed() < CACHE_TTL {
+                    return cards.clone();
+                }
+            }
+        }
+        let date_owned = date.to_string();
+        let scored = tokio::task::spawn_blocking(move || match pns_core::score_date_detailed(&date_owned)
+        {
+            Ok(slate) => slate
+                .cards
+                .into_iter()
+                .map(|c| {
+                    (
+                        c.pitcher_id as i32,
+                        NextStartCard {
+                            projected_fip: c.projected_fip,
+                            expected_runs: c.expected_runs_base,
+                            expected_runs_low: c.expected_runs_low,
+                            expected_runs_high: c.expected_runs_high,
+                            expected_innings: c.expected_innings,
+                            confidence: match c.confidence {
+                                pns_core::Confidence::High => "high".into(),
+                                pns_core::Confidence::Medium => "medium".into(),
+                                pns_core::Confidence::Low => "low".into(),
+                            },
+                        },
+                    )
+                })
+                .collect::<HashMap<i32, NextStartCard>>(),
+            Err(e) => {
+                eprintln!("[mlb-pe] next-start score failed for {date_owned}: {e}");
+                HashMap::new()
+            }
+        })
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[mlb-pe] next-start worker panicked: {e}");
+            HashMap::new()
+        });
+        let mut cache = self.cache.lock().unwrap();
+        cache
+            .next_starts
+            .insert(date.to_string(), (scored.clone(), Instant::now()));
+        scored
     }
 
     async fn get_standings(&self, season: i32, force: bool) -> Result<Vec<TeamStanding>, String> {
@@ -255,6 +306,7 @@ async fn get_predictions(
             HashMap::new()
         }
     };
+    let next_starts = state.get_next_starts(&target_date).await;
 
     let mut rows = Vec::new();
     let mut skipped = Vec::new();
@@ -268,6 +320,7 @@ async fn get_predictions(
                 let (home_p_adj, away_p_adj, home_recent_adj, away_recent_adj) = matchup_inputs(
                     g,
                     &pitchers,
+                    &next_starts,
                     &recent_by_id,
                     include_pitchers,
                     include_recent_form,
@@ -290,12 +343,14 @@ async fn get_predictions(
                     g.home_pitcher_id,
                     g.home_pitcher_name.as_deref(),
                     &pitchers,
+                    &next_starts,
                     include_pitchers,
                 );
                 let away_pinfo = pitcher_info(
                     g.away_pitcher_id,
                     g.away_pitcher_name.as_deref(),
                     &pitchers,
+                    &next_starts,
                     include_pitchers,
                 );
                 let home_rinfo = recent_info(home_recent_raw, include_recent_form);
@@ -480,11 +535,18 @@ async fn get_game_breakdown(
             HashMap::new()
         }
     };
+    let next_starts = state.get_next_starts(&g.date).await;
 
     let home_recent_raw = recent_by_id.get(&g.home_team_id).copied();
     let away_recent_raw = recent_by_id.get(&g.away_team_id).copied();
-    let (home_p_adj, away_p_adj, home_recent_adj, away_recent_adj) =
-        matchup_inputs(g, &pitchers, &recent_by_id, include_pitchers, include_recent_form);
+    let (home_p_adj, away_p_adj, home_recent_adj, away_recent_adj) = matchup_inputs(
+        g,
+        &pitchers,
+        &next_starts,
+        &recent_by_id,
+        include_pitchers,
+        include_recent_form,
+    );
 
     let (prediction, breakdown) = estimate_game_detailed(
         home,
@@ -510,12 +572,14 @@ async fn get_game_breakdown(
             g.home_pitcher_id,
             g.home_pitcher_name.as_deref(),
             &pitchers,
+            &next_starts,
             include_pitchers,
         ),
         away_pitcher: pitcher_info(
             g.away_pitcher_id,
             g.away_pitcher_name.as_deref(),
             &pitchers,
+            &next_starts,
             include_pitchers,
         ),
         home_recent: recent_info(home_recent_raw, include_recent_form),
@@ -651,6 +715,7 @@ fn default_season() -> i32 {
 fn matchup_inputs(
     g: &Game,
     pitchers: &HashMap<i32, PitcherStats>,
+    next_starts: &HashMap<i32, NextStartCard>,
     recent_by_id: &HashMap<i32, RecentForm>,
     include_pitchers: bool,
     include_recent_form: bool,
@@ -664,10 +729,13 @@ fn matchup_inputs(
         if !include_pitchers {
             return None;
         }
-        id.and_then(|id| pitchers.get(&id)).map(|p| PitcherAdj {
-            era: p.era,
-            innings_pitched: p.innings_pitched,
-        })
+        let id = id?;
+        if let Some(ns) = next_starts.get(&id) {
+            return Some(PitcherAdj::from_next_start(ns.expected_runs, ns.expected_innings));
+        }
+        pitchers
+            .get(&id)
+            .map(|p| PitcherAdj::from_era(p.era, p.innings_pitched))
     };
     let recent = |team_id: i32| -> Option<RecentForm> {
         if include_recent_form {
@@ -690,31 +758,40 @@ fn pitcher_info(
     id: Option<i32>,
     name: Option<&str>,
     pitchers: &HashMap<i32, PitcherStats>,
+    next_starts: &HashMap<i32, NextStartCard>,
     model_enabled: bool,
 ) -> Option<PitcherInfo> {
     let id = id?;
     let name = name.unwrap_or("Unknown").to_string();
-    match pitchers.get(&id) {
-        Some(ps) => {
-            let eligible = ps.innings_pitched >= MIN_IP_FOR_ADJUSTMENT;
-            Some(PitcherInfo {
-                name,
-                era: round_to(ps.era, 2),
-                innings_pitched: round_to(ps.innings_pitched, 1),
-                games_started: ps.games_started,
-                applied: model_enabled && eligible,
-                eligible_sample: eligible,
-            })
-        }
-        None => Some(PitcherInfo {
-            name,
-            era: 0.0,
-            innings_pitched: 0.0,
-            games_started: 0,
-            applied: false,
-            eligible_sample: false,
-        }),
-    }
+    let ns = next_starts.get(&id);
+    let ps = pitchers.get(&id);
+    let era_eligible = ps
+        .map(|p| p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT)
+        .unwrap_or(false);
+    let (blend_source, applied) = if !model_enabled {
+        ("none", false)
+    } else if ns.is_some() {
+        ("nextStart", true)
+    } else if era_eligible {
+        ("era", true)
+    } else {
+        ("none", false)
+    };
+    Some(PitcherInfo {
+        name,
+        era: round_to(ps.map(|p| p.era).unwrap_or(0.0), 2),
+        innings_pitched: round_to(ps.map(|p| p.innings_pitched).unwrap_or(0.0), 1),
+        games_started: ps.map(|p| p.games_started).unwrap_or(0),
+        applied,
+        eligible_sample: ns.is_some() || era_eligible,
+        blend_source: blend_source.to_string(),
+        projected_fip: ns.map(|c| round_to(c.projected_fip, 2)),
+        expected_runs: ns.map(|c| round_to(c.expected_runs, 2)),
+        expected_runs_low: ns.map(|c| round_to(c.expected_runs_low, 2)),
+        expected_runs_high: ns.map(|c| round_to(c.expected_runs_high, 2)),
+        expected_innings: ns.map(|c| round_to(c.expected_innings, 1)),
+        confidence: ns.map(|c| c.confidence.clone()),
+    })
 }
 
 // Mirror of pitcher_info for the L20 line. Always returned when we have any

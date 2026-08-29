@@ -204,7 +204,7 @@
       <div class="step-head">
         <span class="step-num">1</span>
         <h2>Scoring &amp; run prevention</h2>
-        <InfoTip text="Each team's runs scored per game (RS/G) and runs allowed per game (RA/G). Recent form nudges these toward the last 20 games; the starter's ERA then shifts the RA the team is expected to allow tonight." />
+        <InfoTip text="Each team's runs scored per game (RS/G) and runs allowed per game (RA/G). Recent form nudges these toward the last 20 games; the next-start outing (or season ERA fallback) then shifts the RA the team is expected to allow tonight." />
       </div>
       <div class="rate-grid">
         {#each [{ side: "away", name: bundle.away, s: b.away, p: bundle.awayPitcher }, { side: "home", name: bundle.home, s: b.home, p: bundle.homePitcher }] as col}
@@ -235,7 +235,12 @@
                   <span class="arrow">→</span>
                   <span class="node" class:strong={!s.pitcherApplied}>{num(s.blendedRaPerGame)}</span>
                 {/if}
-                {#if s.pitcherApplied}
+                {#if s.pitcherApplied && s.pitcherSource === "nextStart"}
+                  <span class="arrow">→</span>
+                  <span class="node dim">next start {num(s.pitcherExpectedRuns)} ER / {num(s.pitcherExpectedInnings, 1)} IP</span>
+                  <span class="arrow">→</span>
+                  <span class="node strong">{num(s.effectiveRaPerGame)}</span>
+                {:else if s.pitcherApplied}
                   <span class="arrow">→</span>
                   <span class="node dim">SP {num(s.pitcherEra)} ERA</span>
                   <span class="arrow">→</span>
@@ -245,10 +250,17 @@
             </div>
 
             <p class="rate-note">
-              {#if s.recentApplied && s.pitcherApplied}
+              {#if s.recentApplied && s.pitcherApplied && s.pitcherSource === "nextStart"}
+                RS/G is a 60/40 season-to-L20 blend; RA/G then uses {col.p?.name ?? "the starter"}'s next-start ER plus remaining innings at team RA/G.
+              {:else if s.recentApplied && s.pitcherApplied}
                 RS/G is a 60/40 season-to-L20 blend; RA/G blends that, then folds in 60% of {col.p?.name ?? "the starter"}'s ERA.
               {:else if s.recentApplied}
-                RS/G and RA/G are 60/40 season-to-L20 blends.{#if col.p && !s.pitcherApplied} Starter ERA not applied (off or &lt; 20 IP).{/if}
+                RS/G and RA/G are 60/40 season-to-L20 blends.{#if col.p && !s.pitcherApplied} Starter not applied (off, no projection, or &lt; 20 IP).{/if}
+              {:else if s.pitcherApplied && s.pitcherSource === "nextStart"}
+                RA/G uses {col.p?.name ?? "the starter"}'s next-start ER plus remaining innings at team RA/G.
+                {#if col.p?.projectedFip != null}
+                  Projected FIP {col.p.projectedFip.toFixed(2)}{#if col.p.confidence} · {col.p.confidence} confidence{/if}{#if col.p.expectedRunsLow != null && col.p.expectedRunsHigh != null} · ER band {col.p.expectedRunsLow.toFixed(1)}–{col.p.expectedRunsHigh.toFixed(1)}{/if}.
+                {/if}
               {:else if s.pitcherApplied}
                 RA/G folds in 60% of {col.p?.name ?? "the starter"}'s ERA.
               {:else}

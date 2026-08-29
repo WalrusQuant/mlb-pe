@@ -21,6 +21,13 @@ export type Pitcher = {
   // True when IP meets the backend's MIN_IP_FOR_ADJUSTMENT threshold.
   // Lets the UI show "(small sample)" without hard-coding the threshold.
   eligibleSample: boolean;
+  blendSource: "era" | "nextStart" | "none";
+  projectedFip: number | null;
+  expectedRuns: number | null;
+  expectedRunsLow: number | null;
+  expectedRunsHigh: number | null;
+  expectedInnings: number | null;
+  confidence: "high" | "medium" | "low" | null;
 };
 
 export type Recent = {
@@ -72,6 +79,9 @@ export type SideBreakdown = {
   pitcherEra: number;
   pitcherIp: number;
   pitcherApplied: boolean;
+  pitcherSource: "era" | "nextStart" | "none";
+  pitcherExpectedRuns: number;
+  pitcherExpectedInnings: number;
   effectiveRaPerGame: number;
   pythagWinPct: number;
   osEff: number;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getPredictions, getStandings, getTeamStats, refreshSchedule } from "$lib/api";
-  import type { PredictionsBundle, TeamStats, TeamStanding } from "$lib/types";
+  import type { Pitcher, PredictionsBundle, TeamStats, TeamStanding } from "$lib/types";
   import { fmtPct, fmtOdds, fmtRuns, todayISO, relativeTime, downloadCSV } from "$lib/format";
   import InfoTip from "$lib/components/InfoTip.svelte";
 
@@ -18,6 +18,16 @@
   let includePitchers = $state(true);
   let includeHomeField = $state(true);
   let includeRecentForm = $state(true);
+
+  function pitcherLine(p: Pitcher): string {
+    if (p.blendSource === "nextStart" && p.projectedFip != null && p.expectedRuns != null) {
+      return `${p.projectedFip.toFixed(2)} FIP · ${p.expectedRuns.toFixed(1)} ER`;
+    }
+    if (p.inningsPitched > 0) {
+      return `${p.era.toFixed(2)} ERA · ${p.gamesStarted} GS`;
+    }
+    return "no season data yet";
+  }
 
   async function load() {
     loading = true;
@@ -191,7 +201,7 @@
     <label class="pitcher-toggle">
       <span class="lbl">
         Pitcher
-        <InfoTip text="When on, each team's effective RA blends 60% starter ERA + 40% team RA/G (using the announced probable pitcher). Off = pure team-level Pythagorean." />
+        <InfoTip text="When on, tonight's starter uses the next-start projection (outing ER + remaining innings at team RA/G). Falls back to 60% season ERA + 40% team RA/G if no projection. Off = pure team-level Pythagorean." />
       </span>
       <button
         class="toggle"
@@ -314,16 +324,12 @@
                 {#if g.awayPitcher}
                   <div class="pitcher" class:pitcher-faded={!g.awayPitcher.applied}>
                     <span class="pname">{g.awayPitcher.name}</span>
-                    {#if g.awayPitcher.inningsPitched > 0}
-                      <span class="pera">
-                        {g.awayPitcher.era.toFixed(2)} ERA · {g.awayPitcher.gamesStarted} GS
-                        {#if !g.awayPitcher.eligibleSample}
-                          <span class="pnote">(small sample)</span>
-                        {/if}
-                      </span>
-                    {:else}
-                      <span class="pera pnote">no season data yet</span>
-                    {/if}
+                    <span class="pera">
+                      {pitcherLine(g.awayPitcher)}
+                      {#if !g.awayPitcher.eligibleSample}
+                        <span class="pnote">(small sample)</span>
+                      {/if}
+                    </span>
                   </div>
                 {:else}
                   <div class="pitcher pitcher-tbd">
@@ -388,16 +394,12 @@
                 {#if g.homePitcher}
                   <div class="pitcher" class:pitcher-faded={!g.homePitcher.applied}>
                     <span class="pname">{g.homePitcher.name}</span>
-                    {#if g.homePitcher.inningsPitched > 0}
-                      <span class="pera">
-                        {g.homePitcher.era.toFixed(2)} ERA · {g.homePitcher.gamesStarted} GS
-                        {#if !g.homePitcher.eligibleSample}
-                          <span class="pnote">(small sample)</span>
-                        {/if}
-                      </span>
-                    {:else}
-                      <span class="pera pnote">no season data yet</span>
-                    {/if}
+                    <span class="pera">
+                      {pitcherLine(g.homePitcher)}
+                      {#if !g.homePitcher.eligibleSample}
+                        <span class="pnote">(small sample)</span>
+                      {/if}
+                    </span>
                   </div>
                 {:else}
                   <div class="pitcher pitcher-tbd">

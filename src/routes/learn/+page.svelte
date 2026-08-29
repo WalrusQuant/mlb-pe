@@ -9,7 +9,7 @@
     { id: "odds", label: "5 · Fair odds" },
     { id: "example", label: "6 · Worked example" },
     { id: "limits", label: "7 · What it doesn't do" },
-    { id: "pitcher", label: "8 · The pitcher adjustment" },
+    { id: "pitcher", label: "8 · The next-start pitcher" },
     { id: "homefield", label: "9 · Home-field advantage" },
     { id: "recent", label: "10 · Recent form weighting" },
     { id: "race", label: "11 · Magic number & ROS walk" },
@@ -176,7 +176,7 @@
   <section id="limits">
     <h2>7 · What this model doesn't do</h2>
     <ul>
-      <li>It doesn't know <strong>who's pitching</strong>. The 2025 ace vs. a spot starter is invisible to season-long aggregates.</li>
+      <li>The <em>base</em> Pythagorean number doesn't know <strong>who's pitching</strong>. Section 8 layers a next-start projection on top.</li>
       <li>It doesn't know <strong>injuries, rest, or lineups</strong> — just team totals to date.</li>
       <li>It assumes no <strong>park factors</strong> — Coors Field and Petco are the same to the model.</li>
     </ul>
@@ -191,58 +191,62 @@
   </section>
 
   <section id="pitcher">
-    <h2>8 · The pitcher adjustment</h2>
+    <h2>8 · The next-start pitcher</h2>
     <p>
       Pure Pythagorean expectation is blind to who's on the mound. A team's RA/G is the
       <em>average</em> across every starter they've used — but tonight, one specific arm is throwing.
-      That's usually the single biggest per-game factor the base model misses.
+      Season ERA is a weak stand-in for that: it's earned runs only, it includes the defense
+      behind the pitcher (which the 40% team RA already carries), and five recent starts is
+      not a sample you should treat as a point estimate.
     </p>
     <p>
-      We fix it by replacing each team's effective runs-allowed rate for the matchup with a blend:
+      For announced starters we score a <strong>next-start projection</strong> inside this app
+      (same public MLB game logs, a frozen Bayesian linear model). It produces two numbers the
+      team model actually needs, plus a skill readout:
     </p>
+    <ul>
+      <li><strong>Projected FIP</strong> — defense-independent skill for the outing. Shown on the card; not blended into RA/G.</li>
+      <li><strong>Expected earned runs</strong> and <strong>expected innings</strong> — the outing itself.</li>
+    </ul>
 
     <Formula label="Effective RA for tonight's matchup">
-      <em>RA<sub>eff</sub></em>/G  =  <em>w</em> · <em>pitcher</em><sub>ERA</sub>
-      +  (1 − <em>w</em>) · <em>team</em><sub>RA/G</sub>
+      <em>RA<sub>eff</sub></em>/G  =  E[ER]
+      +  max(0, 1 − E[IP]/9) · <em>team</em><sub>RA/G</sub>
     </Formula>
 
     <p>
-      Where <em>w</em> = <strong>0.6</strong>. The starter pitches roughly 5.4 of 9 innings on
-      average — about 60% of the game — so they're responsible for ~60% of the runs allowed.
-      The remaining 40% is the bullpen and the rest of the team's defense, which is implicitly
-      captured by the team's season RA/G.
+      Worked numbers: 2.3 expected ER in 5.3 IP, team RA/G 4.5 →
+      <span class="mono">2.3 + (1 − 5.3/9) × 4.5 = 4.15</span>.
+      The remaining innings are the bullpen and the rest of the staff, still priced at the
+      team's (possibly L20-blended) RA/G. Once we have <em>RA<sub>eff</sub></em>, Pythagorean
+      and log5 run as before, and the run-prediction math uses the matchup-specific DS so an
+      ace suppresses the opposing offense's expected runs.
+    </p>
+
+    <p class="subtle">
+      <strong>Fallback:</strong> if the starter is TBD, has no prior starts, or the slate date
+      is on or before the frozen model's training cutoff, we use the old blend —
+      <span class="mono">0.6 · season ERA + 0.4 · team RA/G</span> — and only if season IP ≥ 20.
+      A spot starter with 4 IP and an 18.00 ERA still shouldn't crater the prediction.
+    </p>
+
+    <p class="subtle">
+      <strong>Honest leftover:</strong> the next-start runs are <em>earned</em>; team RA/G is
+      <em>all</em> runs. Same class of mismatch as blending ERA with RA/G. The outing total is
+      still the right unit for the starter's share of the game.
     </p>
 
     <p>
-      Once we have <em>RA<sub>eff</sub></em>, we re-run the Pythagorean math with the team's
-      <em>unchanged</em> RS/G (offense isn't affected by who's pitching for them) and this game-specific
-      effective RA. The new standalone win % flows into log5 as before, and the
-      run-prediction math uses the matchup-specific DS so an ace suppresses the opposing
-      offense's expected runs.
+      In the <a href="/playground">Playground</a>, each side has optional next-start ER / IP
+      (the outing formula) and season ERA / IP (the fallback). Next-start wins when both
+      outing fields are set.
     </p>
 
     <p class="subtle">
-      <strong>Sample-size guardrail:</strong> if the listed starter has fewer than <span class="mono">20</span>
-      innings on the season, we ignore their ERA and fall back to pure team RA. A spot starter
-      with 4 IP and an 18.00 ERA shouldn't crater their team's prediction.
-    </p>
-
-    <p class="subtle">
-      <strong>When the starter is TBD:</strong> many teams don't announce until game day. For
-      those games we skip the adjustment entirely — the prediction is pure team-level Pythagorean,
-      same as before. You'll see <em>"Starter TBD"</em> on the matchup card.
-    </p>
-
-    <p>
-      In the <a href="/playground">Playground</a>, each side now has optional Starter ERA / IP
-      inputs so you can answer questions like <em>"what if the Dodgers throw their #5 instead of their ace?"</em>
-      Leave the fields blank for no adjustment.
-    </p>
-
-    <p class="subtle">
-      <strong>What we're not modeling:</strong> a starter's recent form (last 5 starts vs. season),
-      FIP instead of ERA (FIP is often more predictive in small samples), home/road pitcher splits,
-      handedness vs. lineup. All defensible future additions.
+      <strong>Limits:</strong> the Division Race still walks remaining games with pitcher
+      blend off — most of those starters aren't announced. Confidence is a reliability tier,
+      not “is he good”; the current artifact withholds High. Park in the projection is a
+      home/away runs-per-game proxy, not a full park-factor model.
     </p>
   </section>
 
@@ -330,8 +334,9 @@
       A 60/40 season-heavy split keeps the larger sample doing most of the work — the full-season
       number is still the gravitational center — but it lets the L20 line nudge the prediction by a
       visible amount when a team is running noticeably hot or cold. The blended rates feed into
-      the Pythagorean math <em>before</em> the pitcher adjustment runs, so the starter ERA is
-      blending against the recency-aware team baseline, not the bare season number.
+      the Pythagorean math <em>before</em> the pitcher adjustment runs, so the next-start
+      outing (or ERA fallback) blends against the recency-aware team baseline, not the
+      bare season number.
     </p>
 
     <p class="subtle">

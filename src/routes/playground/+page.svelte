@@ -26,6 +26,10 @@
   let homePitcherIP = $state<number | null>(null);
   let awayPitcherERA = $state<number | null>(null);
   let awayPitcherIP = $state<number | null>(null);
+  let homeNextEr = $state<number | null>(null);
+  let homeNextIp = $state<number | null>(null);
+  let awayNextEr = $state<number | null>(null);
+  let awayNextIp = $state<number | null>(null);
   // Optional L20 (or any "recent") rate overrides. null = no blend.
   let homeRecentRSG = $state<number | null>(null);
   let homeRecentRAG = $state<number | null>(null);
@@ -67,8 +71,17 @@
     return RECENT_FORM_WEIGHT * recentRate + (1 - RECENT_FORM_WEIGHT) * seasonRate;
   }
 
-  function applyPitcher(teamRAG: number, pERA: number | null, pIP: number | null): number {
+  function applyPitcher(
+    teamRAG: number,
+    pERA: number | null,
+    pIP: number | null,
+    nextEr: number | null,
+    nextIp: number | null,
+  ): number {
     if (!applyPitchers) return teamRAG;
+    if (nextEr !== null && nextIp !== null) {
+      return nextEr + Math.max(0, 1 - nextIp / 9) * teamRAG;
+    }
     if (pERA !== null && pIP !== null && pIP >= MIN_IP_FOR_ADJUSTMENT) {
       return STARTER_SHARE * pERA + (1 - STARTER_SHARE) * teamRAG;
     }
@@ -110,8 +123,8 @@
     const awayRSG = blendRate(awaySeasonRSG, awayRecentRSG, awayRecentGames);
     const homeRAGBlended = blendRate(homeSeasonRAG, homeRecentRAG, homeRecentGames);
     const awayRAGBlended = blendRate(awaySeasonRAG, awayRecentRAG, awayRecentGames);
-    const homeRAEff = applyPitcher(homeRAGBlended, homePitcherERA, homePitcherIP);
-    const awayRAEff = applyPitcher(awayRAGBlended, awayPitcherERA, awayPitcherIP);
+    const homeRAEff = applyPitcher(homeRAGBlended, homePitcherERA, homePitcherIP, homeNextEr, homeNextIp);
+    const awayRAEff = applyPitcher(awayRAGBlended, awayPitcherERA, awayPitcherIP, awayNextEr, awayNextIp);
     return { homeRSG, awayRSG, homeRAEff, awayRAEff };
   });
 
@@ -419,7 +432,7 @@
             <label class="apply-toggle">
               <span class="lbl">
                 Apply Pitcher Adjustment
-                <InfoTip text="Off = pure Pythagorean from RS/RA. On = blend 60% starter ERA + 40% team RA/G for each side (when ERA + IP are set and IP ≥ 20)." />
+                <InfoTip text="Off = pure Pythagorean from RS/RA. On = next-start ER + remaining innings at team RA/G when those fields are set; otherwise 60% season ERA + 40% team RA/G (IP ≥ 20)." />
               </span>
               <button
                 class="toggle"
@@ -496,7 +509,7 @@
               <div class="pitcher-row">
                 <span class="lbl">
                   Starter
-                  <InfoTip text="Optional. If set, the team's effective RA blends 60% starter ERA + 40% team RA/G. Needs IP ≥ 20 to apply." />
+                  <InfoTip text="ERA/IP is the season fallback (needs IP ≥ 20). Next-start ER/IP uses outing earned runs plus remaining innings at team RA/G and wins if both are set." />
                 </span>
                 <div class="pitcher-fields">
                   <label>
@@ -509,7 +522,17 @@
                     <input type="number" min="0" step="0.1" placeholder="—"
                       bind:value={awayPitcherIP} />
                   </label>
-                  <button class="ghost small" onclick={() => { awayPitcherERA = null; awayPitcherIP = null; }}>
+                  <label>
+                    <span>Next ER</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={awayNextEr} />
+                  </label>
+                  <label>
+                    <span>Next IP</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={awayNextIp} />
+                  </label>
+                  <button class="ghost small" onclick={() => { awayPitcherERA = null; awayPitcherIP = null; awayNextEr = null; awayNextIp = null; }}>
                     Clear
                   </button>
                 </div>
@@ -571,7 +594,7 @@
               <div class="pitcher-row">
                 <span class="lbl">
                   Starter
-                  <InfoTip text="Optional. If set, the team's effective RA blends 60% starter ERA + 40% team RA/G. Needs IP ≥ 20 to apply." />
+                  <InfoTip text="ERA/IP is the season fallback (needs IP ≥ 20). Next-start ER/IP uses outing earned runs plus remaining innings at team RA/G and wins if both are set." />
                 </span>
                 <div class="pitcher-fields">
                   <label>
@@ -584,7 +607,17 @@
                     <input type="number" min="0" step="0.1" placeholder="—"
                       bind:value={homePitcherIP} />
                   </label>
-                  <button class="ghost small" onclick={() => { homePitcherERA = null; homePitcherIP = null; }}>
+                  <label>
+                    <span>Next ER</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={homeNextEr} />
+                  </label>
+                  <label>
+                    <span>Next IP</span>
+                    <input type="number" min="0" step="0.1" placeholder="—"
+                      bind:value={homeNextIp} />
+                  </label>
+                  <button class="ghost small" onclick={() => { homePitcherERA = null; homePitcherIP = null; homeNextEr = null; homeNextIp = null; }}>
                     Clear
                   </button>
                 </div>

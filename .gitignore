@@ -13,3 +13,4 @@ dist/
 *.sqlite
 *.sqlite3
 .zcode/
+/crates/pns-core/target/

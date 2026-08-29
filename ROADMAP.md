@@ -4,7 +4,7 @@ Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered lo
 
 ## Done
 
-- ✅ **#1 Starting pitcher adjustment** — blends starter ERA with team RA/G (`w = 0.6`, fallback under 20 IP). Toggle to disable. Pitcher info shown on every Predictions card. Learn page section 8.
+- ✅ **#1 Starting pitcher adjustment** — next-start outing ER + remaining innings at team RA/G when the vendored pns-core projection scores; else `0.6 · ERA + 0.4 · team RA/G` (IP ≥ 20). Toggle to disable. Predictions cards show FIP/ER when projected. Learn page section 8.
 - ✅ **#2 Standings page** — six division tables + wild-card race per league using the `/standings` endpoint. Real (W-L) records now plumbed into Predictions cards.
 - ✅ **#5a Home-field advantage** — log-odds shift of 0.1603 (= logit(0.54) − logit(0.50)) applied to home win probability. Shrinks at the extremes. Toggle on Predictions + Playground. Learn page section 9. Park factors (the other half of original #5) still TBD.
 - ✅ **#7 Recent form weighting** — `RS/G` and `RA/G` blended 60% season + 40% L20. Aggregates completed games from the cached schedule (no extra API call). Toggle on Predictions + Playground. L20 line shown on every card. Learn page section 10.

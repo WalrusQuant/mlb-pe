@@ -17,6 +17,8 @@ src-tauri/src/
 │                  # exponent fitter
 └── lib.rs         # Tauri commands + AppState cache (schedule + pitchers + standings)
 
+crates/pns-core/   # vendored next-start scorer (from pitcher-next-start); frozen model in models/
+
 src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (card-per-matchup)
@@ -41,8 +43,12 @@ For each matchup:
    `RS/G_eff = 0.4 · RS/G_L20 + 0.6 · RS/G_season` (same blend for RA/G).
    Computed by `compute_recent_form(&games, RECENT_FORM_WINDOW)` in `model.rs`. The recency-blended RA/G is what the pitcher adjustment then operates on — order matters.
 3. **Pitcher adjustment** (when toggle is on and probable pitcher announced):
-   `effective_RA/G = 0.6 · starter_ERA + 0.4 · (recency-blended) team_RA/G`
-   Below `MIN_IP = 20` innings, fall back to the team RA/G (already L20-blended if step 2 ran).
+   Prefer the vendored next-start projection (`crates/pns-core`, `score_date_detailed`):
+   `RA_eff/G = E[ER] + max(0, 1 − E[IP]/9) · (recency-blended) team_RA/G`.
+   If no card (TBD, date ≤ artifact cutoff, no prior starts), fall back to
+   `0.6 · starter_ERA + 0.4 · team_RA/G` when season IP ≥ 20; else team RA/G.
+   Recopy `crates/pns-core` + `models/pns-model-v1.json` when the PNS artifact retrains.
+   Score via `tokio::task::spawn_blocking` — pns-core is blocking reqwest.
 4. Matchup win prob via log5 over the per-team Pythag computed from the blended rates.
 5. **Home-field advantage** (when toggle is on): shift home win in *log-odds space* by `HOME_FIELD_LOG_ODDS = 0.1603` (= logit(0.54) − logit(0.50)). This bumps a 50/50 game to ~54% but shrinks at the extremes (a 90% favorite gains < 2 pts). Helper: `shift_log_odds(p, delta)` in `model.rs`.
 6. Predicted runs = OS_eff × DS_eff × league-avg (HFA does NOT affect run totals). OS_eff uses the L20-blended RS/G.

@@ -50,6 +50,14 @@ pub struct PitcherInfo {
     // True when the pitcher's IP meets MIN_IP_FOR_ADJUSTMENT. Lets the frontend
     // show "(small sample)" without re-deriving the threshold in JS.
     pub eligible_sample: bool,
+    // "nextStart" | "era" | "none" — what actually entered apply_pitcher.
+    pub blend_source: String,
+    pub projected_fip: Option<f64>,
+    pub expected_runs: Option<f64>,
+    pub expected_runs_low: Option<f64>,
+    pub expected_runs_high: Option<f64>,
+    pub expected_innings: Option<f64>,
+    pub confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,10 +221,55 @@ pub fn shift_log_odds(p: f64, delta: f64) -> f64 {
     1.0 / (1.0 + (-lo).exp())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitcherSource {
+    Era,
+    NextStart,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PitcherAdj {
-    pub era: f64,
+    /// Season ERA (Era) or outing expected earned runs (NextStart).
+    pub rate_or_er: f64,
+    /// Season IP (Era, sample gate) or expected outing IP (NextStart, bullpen share).
     pub innings_pitched: f64,
+    pub source: PitcherSource,
+}
+
+impl PitcherAdj {
+    pub fn from_era(era: f64, innings_pitched: f64) -> Self {
+        Self {
+            rate_or_er: era,
+            innings_pitched,
+            source: PitcherSource::Era,
+        }
+    }
+
+    pub fn from_next_start(expected_runs: f64, expected_innings: f64) -> Self {
+        Self {
+            rate_or_er: expected_runs,
+            innings_pitched: expected_innings,
+            source: PitcherSource::NextStart,
+        }
+    }
+
+    pub fn is_applied(&self) -> bool {
+        match self.source {
+            PitcherSource::NextStart => true,
+            PitcherSource::Era => self.innings_pitched >= MIN_IP_FOR_ADJUSTMENT,
+        }
+    }
+}
+
+/// Date-specific next-start projection from the vendored pns-core artifact.
+#[derive(Debug, Clone)]
+pub struct NextStartCard {
+    pub projected_fip: f64,
+    pub expected_runs: f64,
+    pub expected_runs_low: f64,
+    pub expected_runs_high: f64,
+    pub expected_innings: f64,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -248,8 +301,11 @@ pub struct SideBreakdown {
     pub pitcher_present: bool,
     pub pitcher_era: f64,
     pub pitcher_ip: f64,
-    // True when the starter ERA actually moved effective RA (toggle on AND IP big enough).
+    // True when the starter actually moved effective RA.
     pub pitcher_applied: bool,
+    pub pitcher_source: &'static str,
+    pub pitcher_expected_runs: f64,
+    pub pitcher_expected_innings: f64,
     pub effective_ra_per_game: f64,
     pub pythag_win_pct: f64,
     pub os_eff: f64,
@@ -474,16 +530,18 @@ fn season_ra_pg(team: &TeamStats) -> f64 {
     }
 }
 
-// Blend the team's (possibly recent-form-adjusted) RA/G with the starter's ERA.
-// The starter accounts for STARTER_SHARE of the runs allowed; the remainder is
-// the team's average defense (bullpen + average starter pool).
-//
-// If the pitcher's sample is below MIN_IP_FOR_ADJUSTMENT we fall back to the
-// team RA — a tiny sample with an extreme ERA shouldn't crater a prediction.
-fn apply_pitcher(team_ra_pg: f64, pitcher: Option<PitcherAdj>) -> f64 {
+// Blend the team's (possibly recent-form-adjusted) RA/G with the starter.
+// NextStart: outing ER + remaining innings at team RA/G.
+// Era fallback: starter accounts for STARTER_SHARE of RA; rest is bullpen / staff.
+// Below MIN_IP_FOR_ADJUSTMENT on the Era path we fall back to team RA.
+pub fn apply_pitcher(team_ra_pg: f64, pitcher: Option<PitcherAdj>) -> f64 {
     match pitcher {
+        Some(p) if p.source == PitcherSource::NextStart => {
+            let bullpen_share = (1.0 - p.innings_pitched / 9.0).max(0.0);
+            p.rate_or_er + bullpen_share * team_ra_pg
+        }
         Some(p) if p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT => {
-            STARTER_SHARE * p.era + (1.0 - STARTER_SHARE) * team_ra_pg
+            STARTER_SHARE * p.rate_or_er + (1.0 - STARTER_SHARE) * team_ra_pg
         }
         _ => team_ra_pg,
     }
@@ -557,9 +615,8 @@ pub fn estimate_game_detailed(
         RECENT_FORM_WEIGHT,
     );
 
-    // Pitcher adjustment blends the starter ERA into the (possibly L20-blended)
-    // team RA/G — recent form shifts the team baseline, the starter then shifts
-    // the matchup-specific RA off that baseline.
+    // Pitcher adjustment (next-start ER+IP, else season ERA) runs on the
+    // possibly L20-blended team RA/G. Order: season → recent form → starter.
     let home_ra_eff = apply_pitcher(home_ra_team, home_pitcher);
     let away_ra_eff = apply_pitcher(away_ra_team, away_pitcher);
 
@@ -612,8 +669,14 @@ pub fn estimate_game_detailed(
                 pred_runs: f64|
      -> SideBreakdown {
         let recent_applied = matches!(recent, Some(r) if r.games >= MIN_RECENT_GAMES);
-        let pitcher_applied =
-            matches!(pitcher, Some(p) if p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT);
+        let pitcher_applied = pitcher.map(|p| p.is_applied()).unwrap_or(false);
+        let (pitcher_source, era_val, exp_runs, exp_ip) = match pitcher {
+            Some(p) if p.source == PitcherSource::NextStart => {
+                ("nextStart", 0.0, p.rate_or_er, p.innings_pitched)
+            }
+            Some(p) => ("era", p.rate_or_er, 0.0, 0.0),
+            None => ("none", 0.0, 0.0, 0.0),
+        };
         SideBreakdown {
             season_rs_per_game: round_to(season_rs, 2),
             season_ra_per_game: round_to(season_ra, 2),
@@ -625,9 +688,12 @@ pub fn estimate_game_detailed(
             blended_rs_per_game: round_to(blended_rs, 2),
             blended_ra_per_game: round_to(blended_ra, 2),
             pitcher_present: pitcher.is_some(),
-            pitcher_era: round_to(pitcher.map(|p| p.era).unwrap_or(0.0), 2),
+            pitcher_era: round_to(era_val, 2),
             pitcher_ip: round_to(pitcher.map(|p| p.innings_pitched).unwrap_or(0.0), 1),
             pitcher_applied,
+            pitcher_source,
+            pitcher_expected_runs: round_to(exp_runs, 2),
+            pitcher_expected_innings: round_to(exp_ip, 1),
             effective_ra_per_game: round_to(ra_eff, 2),
             pythag_win_pct: round_to(pyt, 4),
             os_eff: round_to(os_eff, 3),
@@ -930,8 +996,8 @@ mod tests {
             games_played: 100, pythag_win_pct: 0.45, os: 0.95, ds: 1.05,
             recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
         };
-        let hp = Some(PitcherAdj { era: 3.10, innings_pitched: 120.0 });
-        let ap = Some(PitcherAdj { era: 4.80, innings_pitched: 90.0 });
+        let hp = Some(PitcherAdj::from_era(3.10, 120.0));
+        let ap = Some(PitcherAdj::from_era(4.80, 90.0));
         let hr = Some(RecentForm { games: 20, rs_per_game: 5.2, ra_per_game: 3.8 });
         let ar = Some(RecentForm { games: 20, rs_per_game: 3.9, ra_per_game: 4.6 });
 
@@ -1001,7 +1067,7 @@ mod tests {
     #[test]
     fn apply_pitcher_blends_era_with_team_ra() {
         // 0.6 * 3.0 + 0.4 * 4.5 = 1.8 + 1.8 = 3.6
-        let adj = Some(PitcherAdj { era: 3.0, innings_pitched: 100.0 });
+        let adj = Some(PitcherAdj::from_era(3.0, 100.0));
         let eff = apply_pitcher(4.5, adj);
         assert!((eff - 3.6).abs() < 1e-9);
     }
@@ -1009,13 +1075,28 @@ mod tests {
     #[test]
     fn apply_pitcher_boundary_at_min_ip() {
         // At exactly MIN_IP_FOR_ADJUSTMENT (20.0) the adjustment applies…
-        let at = Some(PitcherAdj { era: 3.0, innings_pitched: 20.0 });
+        let at = Some(PitcherAdj::from_era(3.0, 20.0));
         assert!((apply_pitcher(4.5, at) - 3.6).abs() < 1e-9);
         // …just below it (19.9) it falls back to the team RA.
-        let below = Some(PitcherAdj { era: 3.0, innings_pitched: 19.9 });
+        let below = Some(PitcherAdj::from_era(3.0, 19.9));
         assert!((apply_pitcher(4.5, below) - 4.5).abs() < 1e-9);
         // None also falls back.
         assert!((apply_pitcher(4.5, None) - 4.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn apply_pitcher_next_start_outing_blend() {
+        // ER 2.3, IP 5.3, team RA/G 4.5 → 2.3 + (1 - 5.3/9)*4.5 = 4.15
+        let adj = Some(PitcherAdj::from_next_start(2.3, 5.3));
+        let eff = apply_pitcher(4.5, adj);
+        assert!((eff - 4.15).abs() < 1e-9);
+        // IP ≥ 9 → no bullpen remainder.
+        let full = Some(PitcherAdj::from_next_start(3.1, 9.0));
+        assert!((apply_pitcher(4.5, full) - 3.1).abs() < 1e-9);
+        // Next-start applies even with a tiny IP sample (PNS already shrinks).
+        let short = Some(PitcherAdj::from_next_start(1.2, 4.0));
+        let expected = 1.2 + (1.0 - 4.0 / 9.0) * 4.5;
+        assert!((apply_pitcher(4.5, short) - expected).abs() < 1e-9);
     }
 
     // ── Recent-form window count ────────────────────────────────────────
@@ -1096,7 +1177,7 @@ mod tests {
         // 0.6*4.0 + 0.4*3.0 = 3.6. Pitcher ERA 2.0 → eff = 0.6*2.0 + 0.4*3.6 = 2.64.
         // If the pitcher wrongly operated on season RA, we'd get 0.6*2.0+0.4*4.0 = 2.8.
         let hr = Some(RecentForm { games: 20, rs_per_game: 5.0, ra_per_game: 3.0 });
-        let hp = Some(PitcherAdj { era: 2.0, innings_pitched: 100.0 });
+        let hp = Some(PitcherAdj::from_era(2.0, 100.0));
         let (_, bd) = estimate_game_detailed(&home, &away, 4.5, hp, None, hr, None, 1.83, false);
         assert!((bd.home.effective_ra_per_game - 2.64).abs() < 1e-6,
             "expected 2.64 (pitcher on blended RA), got {}", bd.home.effective_ra_per_game);

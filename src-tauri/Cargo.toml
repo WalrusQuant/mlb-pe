@@ -19,7 +19,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 once_cell = "1"
-tokio = { version = "1", features = ["macros"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+pns-core = { path = "../crates/pns-core" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

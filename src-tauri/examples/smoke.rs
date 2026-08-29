@@ -83,11 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let home_p = g
                     .home_pitcher_id
                     .and_then(|id| pitchers.get(&id))
-                    .map(|p| PitcherAdj { era: p.era, innings_pitched: p.innings_pitched });
+                    .map(|p| PitcherAdj::from_era(p.era, p.innings_pitched));
                 let away_p = g
                     .away_pitcher_id
                     .and_then(|id| pitchers.get(&id))
-                    .map(|p| PitcherAdj { era: p.era, innings_pitched: p.innings_pitched });
+                    .map(|p| PitcherAdj::from_era(p.era, p.innings_pitched));
                 let home_r = recent.get(&g.home_team_id).copied();
                 let away_r = recent.get(&g.away_team_id).copied();
                 let base = estimate_game(h, a, lg_avg);
