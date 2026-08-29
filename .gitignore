@@ -14,3 +14,5 @@ dist/
 *.sqlite3
 .zcode/
 /crates/pns-core/target/
+__pycache__/
+*.pyc
