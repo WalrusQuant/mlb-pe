@@ -358,6 +358,9 @@ async fn get_predictions(
                 rows.push(GameRow {
                     game_pk: g.game_pk,
                     date: g.date.clone(),
+                    game_date_time: g.game_date_time.clone(),
+                    home_team_id: g.home_team_id,
+                    away_team_id: g.away_team_id,
                     home: g.home_team_name.clone(),
                     away: g.away_team_name.clone(),
                     home_pitcher: home_pinfo,
@@ -372,6 +375,12 @@ async fn get_predictions(
             }
         }
     }
+
+    rows.sort_by(|a, b| {
+        a.game_date_time
+            .cmp(&b.game_date_time)
+            .then(a.game_pk.cmp(&b.game_pk))
+    });
 
     // BTreeSet iterates in sorted order, so the resulting Vec is already sorted.
     let available_dates: Vec<String> = games
@@ -471,6 +480,7 @@ async fn get_standings(
 struct GameBreakdownBundle {
     season: i32,
     date: String,
+    game_date_time: Option<String>,
     game_pk: i64,
     home: String,
     away: String,
@@ -563,6 +573,7 @@ async fn get_game_breakdown(
     Ok(GameBreakdownBundle {
         season,
         date: g.date.clone(),
+        game_date_time: g.game_date_time.clone(),
         game_pk,
         home: g.home_team_name.clone(),
         away: g.away_team_name.clone(),
@@ -591,6 +602,19 @@ async fn get_game_breakdown(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RecentResult {
+    game_pk: i64,
+    date: String,
+    opponent: String,
+    opponent_id: i32,
+    home: bool,
+    runs_scored: i32,
+    runs_allowed: i32,
+    won: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GameContextBundle {
     game_pk: i64,
     home: String,
@@ -603,6 +627,8 @@ struct GameContextBundle {
     lineups: Lineups,
     home_bullpen: Option<Bullpen>,
     away_bullpen: Option<Bullpen>,
+    home_last5: Vec<RecentResult>,
+    away_last5: Vec<RecentResult>,
 }
 
 // Matchup + team context around a game: head-to-head series and home/road/L10
@@ -659,7 +685,51 @@ async fn get_game_context(
         lineups,
         home_bullpen,
         away_bullpen,
+        home_last5: last_five(&games, g.home_team_id, game_pk),
+        away_last5: last_five(&games, g.away_team_id, game_pk),
     })
+}
+
+fn last_five(games: &[Game], team_id: i32, before_pk: i64) -> Vec<RecentResult> {
+    let mut rows: Vec<&Game> = games
+        .iter()
+        .filter(|g| {
+            g.is_final()
+                && g.game_pk != before_pk
+                && (g.home_team_id == team_id || g.away_team_id == team_id)
+        })
+        .collect();
+    rows.sort_by(|a, b| b.date.cmp(&a.date).then(b.game_pk.cmp(&a.game_pk)));
+    rows.into_iter()
+        .take(5)
+        .map(|g| {
+            let home = g.home_team_id == team_id;
+            let rs = if home {
+                g.home_runs.unwrap_or(0)
+            } else {
+                g.away_runs.unwrap_or(0)
+            };
+            let ra = if home {
+                g.away_runs.unwrap_or(0)
+            } else {
+                g.home_runs.unwrap_or(0)
+            };
+            RecentResult {
+                game_pk: g.game_pk,
+                date: g.date.clone(),
+                opponent: if home {
+                    g.away_team_name.clone()
+                } else {
+                    g.home_team_name.clone()
+                },
+                opponent_id: if home { g.away_team_id } else { g.home_team_id },
+                home,
+                runs_scored: rs,
+                runs_allowed: ra,
+                won: rs > ra,
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]

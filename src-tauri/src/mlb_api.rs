@@ -19,6 +19,7 @@ const USER_AGENT: &str = "mlb-pe-tauri/0.1 (github.com/adamwickwire/mlb-pe)";
 pub struct Game {
     pub game_pk: i64,
     pub date: String, // "YYYY-MM-DD"
+    pub game_date_time: Option<String>, // ISO first pitch from schedule gameDate
     pub status: GameStatus,
     pub series_description: Option<String>,
     pub home_team_id: i32,
@@ -307,6 +308,7 @@ fn normalize(resp: ApiScheduleResponse) -> Vec<Game> {
             out.push(Game {
                 game_pk: g.game_pk,
                 date: game_date,
+                game_date_time: g.game_date_time,
                 status,
                 series_description: g.series_description,
                 home_team_id: g.teams.home.team.id,
@@ -347,6 +349,8 @@ struct ApiGame {
     game_pk: i64,
     #[serde(rename = "officialDate")]
     official_date: Option<String>,
+    #[serde(rename = "gameDate")]
+    game_date_time: Option<String>,
     status: ApiStatus,
     teams: ApiTeams,
     #[serde(rename = "seriesDescription")]

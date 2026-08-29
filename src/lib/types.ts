@@ -44,6 +44,9 @@ export type Recent = {
 export type GameRow = {
   gamePk: number;
   date: string;
+  gameDateTime: string | null;
+  homeTeamId: number;
+  awayTeamId: number;
   home: string;
   away: string;
   homePitcher: Pitcher | null;
@@ -104,6 +107,7 @@ export type MatchupBreakdown = {
 export type GameBreakdownBundle = {
   season: number;
   date: string;
+  gameDateTime: string | null;
   gamePk: number;
   home: string;
   away: string;
@@ -175,6 +179,17 @@ export type Bullpen = {
   saves: number;
 };
 
+export type RecentResult = {
+  gamePk: number;
+  date: string;
+  opponent: string;
+  opponentId: number;
+  home: boolean;
+  runsScored: number;
+  runsAllowed: number;
+  won: boolean;
+};
+
 export type GameContextBundle = {
   gamePk: number;
   home: string;
@@ -187,6 +202,8 @@ export type GameContextBundle = {
   lineups: Lineups;
   homeBullpen: Bullpen | null;
   awayBullpen: Bullpen | null;
+  homeLast5: RecentResult[];
+  awayLast5: RecentResult[];
 };
 
 export type TeamStats = {

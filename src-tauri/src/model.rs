@@ -77,6 +77,12 @@ pub struct GameRow {
     #[serde(rename = "gamePk")]
     pub game_pk: i64,
     pub date: String,
+    #[serde(rename = "gameDateTime")]
+    pub game_date_time: Option<String>,
+    #[serde(rename = "homeTeamId")]
+    pub home_team_id: i32,
+    #[serde(rename = "awayTeamId")]
+    pub away_team_id: i32,
     pub home: String,
     pub away: String,
     #[serde(rename = "homePitcher")]
@@ -851,6 +857,7 @@ mod tests {
             home_pitcher_name: None,
             away_pitcher_id: None,
             away_pitcher_name: None,
+            game_date_time: None,
         }
     }
 

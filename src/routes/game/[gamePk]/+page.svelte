@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
-  import { getGameBreakdown, getGameContext, getStandings } from "$lib/api";
+  import { getGameBreakdown, getGameContext, getStandings, getTeamStats } from "$lib/api";
   import type {
     GameBreakdownBundle,
     SideBreakdown,
@@ -9,6 +9,8 @@
     TeamSplits,
     LineupSpot,
     Bullpen,
+    Pitcher,
+    TeamStats,
   } from "$lib/types";
   import { fmtPct, fmtOdds, fmtRuns } from "$lib/format";
   import Formula from "$lib/components/Formula.svelte";
@@ -24,6 +26,9 @@
   // and bail before writing state if a newer navigation superseded them,
   // preventing a slow older fetch from clobbering the current view.
   let reqId = 0;
+  let lastPk = 0;
+  let rankById = $state<Map<number, number>>(new Map());
+  let teamsById = $state<Map<number, TeamStats>>(new Map());
 
   async function load(id: number, gamePk: number, opts: {
     exponent?: number;
@@ -44,7 +49,6 @@
     } finally {
       if (id === reqId) loading = false;
     }
-    // Records are secondary context — a standings outage shouldn't blank the page.
     try {
       const st = await getStandings();
       if (id !== reqId) return;
@@ -53,6 +57,19 @@
       recordById = rec;
     } catch {
       /* leave records empty */
+    }
+    try {
+      const ts = await getTeamStats({ exponent: opts.exponent });
+      if (id !== reqId) return;
+      const byId = new Map<number, TeamStats>();
+      for (const t of ts.teams) byId.set(t.teamId, t);
+      teamsById = byId;
+      const ranked = [...ts.teams].sort((a, b) => b.pythagWinPct - a.pythagWinPct);
+      const ranks = new Map<number, number>();
+      ranked.forEach((t, i) => ranks.set(t.teamId, i + 1));
+      rankById = ranks;
+    } catch {
+      /* ranks optional */
     }
   }
 
@@ -87,16 +104,47 @@
       return;
     }
     const expRaw = sp.get("exp");
-    // Do not leave the previous matchup visible while this route is loading.
-    bundle = null;
+    const pkChanged = lastPk !== gamePk;
+    lastPk = gamePk;
+    if (pkChanged) bundle = null;
     load(id, gamePk, {
       exponent: expRaw != null ? Number(expRaw) : undefined,
       includePitchers: sp.get("p") !== "false",
       includeHomeField: sp.get("hf") !== "false",
       includeRecentForm: sp.get("rf") !== "false",
     });
-    loadContext(id, gamePk);
+    if (pkChanged) loadContext(id, gamePk);
   });
+
+  function flag(name: string): boolean {
+    return page.url.searchParams.get(name) !== "false";
+  }
+
+  function setFlag(name: string, on: boolean) {
+    const params = new URLSearchParams(page.url.searchParams);
+    params.set(name, String(on));
+    goto(`${page.url.pathname}?${params.toString()}`, {
+      replaceState: true,
+      keepFocus: true,
+      noScroll: true,
+    });
+  }
+
+  function firstPitch(iso: string | null | undefined): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+
+  function rpg(t: TeamStats | undefined): string {
+    if (!t || t.gamesPlayed === 0) return "—";
+    return (t.runsScored / t.gamesPlayed).toFixed(1);
+  }
+  function rapg(t: TeamStats | undefined): string {
+    if (!t || t.gamesPlayed === 0) return "—";
+    return (t.runsAllowed / t.gamesPlayed).toFixed(1);
+  }
 
   // a = home team, b = away team (set that way in compute_head_to_head).
   function seriesLine(c: GameContextBundle): string {
@@ -125,7 +173,34 @@
 </script>
 
 <section class="wrap">
-  <button class="back" onclick={goBack}>← Back to predictions</button>
+  <div class="pagehead">
+    <button class="back" onclick={goBack}>← Predictions</button>
+    {#if bundle}
+      <h1 class="title">{bundle.away.split(" ").pop()} at {bundle.home.split(" ").pop()}</h1>
+      <span class="when">{firstPitch(bundle.gameDateTime)}{#if bundle.date} · {bundle.date}{/if}</span>
+    {/if}
+    <div class="togs">
+      <label class="tog">
+        <span>Pitcher</span>
+        <button class="toggle" class:on={flag("p")} role="switch" aria-checked={flag("p")} aria-label="Pitcher adjustment" onclick={() => setFlag("p", !flag("p"))}>
+          <span class="thumb"></span>
+        </button>
+      </label>
+      <label class="tog">
+        <span>HFA</span>
+        <button class="toggle" class:on={flag("hf")} role="switch" aria-checked={flag("hf")} aria-label="Home field" onclick={() => setFlag("hf", !flag("hf"))}>
+          <span class="thumb"></span>
+        </button>
+      </label>
+      <label class="tog">
+        <span>Recent</span>
+        <button class="toggle" class:on={flag("rf")} role="switch" aria-checked={flag("rf")} aria-label="Recent form" onclick={() => setFlag("rf", !flag("rf"))}>
+          <span class="thumb"></span>
+        </button>
+      </label>
+    </div>
+  </div>
+
 
   {#if loading && !bundle}
     <div class="card center">
@@ -142,65 +217,127 @@
     {@const b = bundle.breakdown}
     {@const awayWin = bundle.prediction.awayWinProb >= 0.5}
     {@const homeWin = bundle.prediction.homeWinProb >= 0.5}
+    {@const awayTs = teamsById.get(bundle.awayTeamId)}
+    {@const homeTs = teamsById.get(bundle.homeTeamId)}
 
-    <!-- ── HEADER: the answer up top ─────────────────────────── -->
-    <header class="head">
-      <div class="matchup-title">
-        <div class="team-block away">
-          <h1>{bundle.away}</h1>
-          <span class="sub">Away{#if record(bundle.awayTeamId)} · {record(bundle.awayTeamId)}{/if}</span>
-        </div>
-        <span class="at">@</span>
-        <div class="team-block home">
-          <h1>{bundle.home}</h1>
-          <span class="sub">Home{#if record(bundle.homeTeamId)} · {record(bundle.homeTeamId)}{/if}</span>
-        </div>
-      </div>
-      <div class="meta">
-        <span class="badge">{bundle.date}</span>
-        <span class="badge">x = {num(b.exponent, 3)}</span>
-        <span class="badge">Lg avg {num(b.leagueAvgRuns, 2)} R/team/g</span>
-      </div>
-    </header>
+    <div class="layout">
+    <aside class="toc" aria-label="On this page">
+      <p class="toc-title">On this page</p>
+      <ul>
+        <li><a href="#hero">Matchup</a></li>
+        <li><a href="#pitching">Pitching</a></li>
+        <li><a href="#form">Form</a></li>
+        <li><a href="#breakdown">Breakdown</a></li>
+        <li><a href="#series">Series</a></li>
+        <li><a href="#lineups">Lineups</a></li>
+        <li><a href="#bullpen">Bullpen</a></li>
+      </ul>
+    </aside>
+    <div class="main">
 
-    <div class="card summary">
-      <div class="probs">
-        <div class="prob" class:winner={awayWin}>{fmtPct(bundle.prediction.awayWinProb, 1)}</div>
-        <div class="prob" class:winner={homeWin}>{fmtPct(bundle.prediction.homeWinProb, 1)}</div>
-      </div>
-      <div class="bars">
-        <div class="bar bar-away" class:winner={awayWin}>
-          <span class="fill" style="--w: {(bundle.prediction.awayWinProb * 100).toFixed(1)}%"></span>
+    <div class="card hero" id="hero">
+      <div class="hero-grid">
+        <div class="hero-side">
+          <h2>{bundle.away}</h2>
+          <p class="sub">Away{#if record(bundle.awayTeamId)} · {record(bundle.awayTeamId)}{/if}</p>
+          <dl class="kvs">
+            <div><dt>Rank</dt><dd class="mono">{rankById.get(bundle.awayTeamId) ?? "—"}</dd></div>
+            <div><dt>R/G</dt><dd class="mono">{rpg(awayTs)}</dd></div>
+            <div><dt>RA/G</dt><dd class="mono">{rapg(awayTs)}</dd></div>
+          </dl>
         </div>
-        <div class="bar bar-home" class:winner={homeWin}>
-          <span class="fill" style="--w: {(bundle.prediction.homeWinProb * 100).toFixed(1)}%"></span>
+        <div class="hero-mid">
+          <div class="probs">
+            <div class="prob" class:winner={awayWin}>{fmtPct(bundle.prediction.awayWinProb, 1)}</div>
+            <div class="prob" class:winner={homeWin}>{fmtPct(bundle.prediction.homeWinProb, 1)}</div>
+          </div>
+          <div class="bars">
+            <div class="bar bar-away" class:winner={awayWin}>
+              <span class="fill" style="--w: {(bundle.prediction.awayWinProb * 100).toFixed(1)}%"></span>
+            </div>
+            <div class="bar bar-home" class:winner={homeWin}>
+              <span class="fill" style="--w: {(bundle.prediction.homeWinProb * 100).toFixed(1)}%"></span>
+            </div>
+          </div>
+          <div class="projrow">
+            <span class="mono">{fmtRuns(bundle.prediction.awayPredRuns)}</span>
+            <span class="sr-lbl">Projected runs · {fmtRuns(bundle.prediction.totalRuns)} total</span>
+            <span class="mono">{fmtRuns(bundle.prediction.homePredRuns)}</span>
+          </div>
+          <div class="projrow">
+            <span class="mono" class:winner={awayWin}>{fmtOdds(bundle.prediction.awayFairOdds)}</span>
+            <span class="sr-lbl">Fair odds</span>
+            <span class="mono" class:winner={homeWin}>{fmtOdds(bundle.prediction.homeFairOdds)}</span>
+          </div>
         </div>
-      </div>
-      <div class="summary-row">
-        <div class="sr-cell">
-          <span class="sr-val" class:winner={awayWin}>{fmtOdds(bundle.prediction.awayFairOdds)}</span>
-          <span class="sr-lbl">Fair odds</span>
-          <span class="sr-val" class:winner={homeWin}>{fmtOdds(bundle.prediction.homeFairOdds)}</span>
-        </div>
-        <div class="sr-cell">
-          <span class="sr-val">{fmtRuns(bundle.prediction.awayPredRuns)}</span>
-          <span class="sr-lbl">Projected runs</span>
-          <span class="sr-val">{fmtRuns(bundle.prediction.homePredRuns)}</span>
-        </div>
-        <div class="sr-cell total">
-          <span class="sr-lbl">Total</span>
-          <span class="sr-val big">{fmtRuns(bundle.prediction.totalRuns)}</span>
+        <div class="hero-side right">
+          <h2>{bundle.home}</h2>
+          <p class="sub">Home{#if record(bundle.homeTeamId)} · {record(bundle.homeTeamId)}{/if}</p>
+          <dl class="kvs">
+            <div><dt>Rank</dt><dd class="mono">{rankById.get(bundle.homeTeamId) ?? "—"}</dd></div>
+            <div><dt>R/G</dt><dd class="mono">{rpg(homeTs)}</dd></div>
+            <div><dt>RA/G</dt><dd class="mono">{rapg(homeTs)}</dd></div>
+          </dl>
         </div>
       </div>
     </div>
 
-    <p class="intro">
-      Here's how the model arrived at those numbers — the same steps the
-      <a href="/learn">Learn</a> page walks through, filled in with this game's figures.
-    </p>
+    <section class="block" id="pitching">
+      <h2>Pitching</h2>
+      <div class="two">
+        {#each [{ p: bundle.awayPitcher, s: b.away, name: bundle.away }, { p: bundle.homePitcher, s: b.home, name: bundle.home }] as col}
+          {@const p = col.p as Pitcher | null}
+          {@const s = col.s as SideBreakdown}
+          <div class="panel">
+            <h3>{p?.name ?? "Starter TBD"} <span class="mute">{col.name}</span></h3>
+            {#if p && s.pitcherSource === "nextStart"}
+              <p class="mono">{p.projectedFip?.toFixed(2) ?? "—"} FIP · {s.pitcherExpectedRuns.toFixed(1)} ER in {s.pitcherExpectedInnings.toFixed(1)} IP</p>
+              {#if p.expectedRunsLow != null && p.expectedRunsHigh != null}
+                <p class="mute">ER band {p.expectedRunsLow.toFixed(1)}–{p.expectedRunsHigh.toFixed(1)}{#if p.confidence} · {p.confidence}{/if}</p>
+              {/if}
+              <p class="mute">Season {p.era.toFixed(2)} ERA · {p.gamesStarted} GS</p>
+            {:else if p && p.inningsPitched > 0}
+              <p class="mono">{p.era.toFixed(2)} ERA · {p.gamesStarted} GS · {p.inningsPitched.toFixed(1)} IP</p>
+            {:else}
+              <p class="mute">No starter line yet.</p>
+            {/if}
+            {#if s.pitcherApplied}
+              <p class="mono">RA/G {s.seasonRaPerGame.toFixed(2)} → {s.effectiveRaPerGame.toFixed(2)} tonight</p>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </section>
+
+    <section class="block" id="form">
+      <h2>Last 5 games</h2>
+      {#if context}
+        <div class="two">
+          {#each [{ name: bundle.away, rows: context.awayLast5 }, { name: bundle.home, rows: context.homeLast5 }] as col}
+            <div class="panel">
+              <h3>{col.name}</h3>
+              {#if col.rows.length === 0}
+                <p class="mute">No completed games yet.</p>
+              {:else}
+                <ul class="l5">
+                  {#each col.rows as r (r.gamePk)}
+                    <li>
+                      <span class="wl" class:good={r.won} class:bad={!r.won}>{r.won ? "W" : "L"} {r.runsScored}–{r.runsAllowed}</span>
+                      <span>{r.date.slice(5)} {r.home ? "vs" : "@"} {r.opponent}</span>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <p class="mute">Loading form…</p>
+      {/if}
+    </section>
 
     <!-- ── STEP 1: rates ─────────────────────────────────────── -->
-    <section class="step">
+    <section class="step" id="breakdown">
       <div class="step-head">
         <span class="step-num">1</span>
         <h2>Scoring &amp; run prevention</h2>
@@ -436,7 +573,7 @@
         <p class="muted"><span class="spinner" aria-hidden="true"></span> Loading matchup context…</p>
       </section>
     {:else if context}
-      <section class="step">
+      <section class="step" id="series">
         <div class="step-head"><h2>Season series</h2></div>
         {#if context.headToHead.meetings.length === 0}
           <p class="ctx-empty">These teams haven't met yet this season.</p>
@@ -462,7 +599,7 @@
         </div>
       </section>
 
-      <section class="step">
+      <section class="step" id="lineups">
         <div class="step-head"><h2>Probable lineups</h2></div>
         <div class="calc-grid">
           {@render lineupCol(context.away, context.lineups.away)}
@@ -470,7 +607,7 @@
         </div>
       </section>
 
-      <section class="step">
+      <section class="step" id="bullpen">
         <div class="step-head"><h2>Bullpen (relief pitching)</h2></div>
         <div class="calc-grid">
           {@render bullpenCol(context.away, context.awayBullpen)}
@@ -478,14 +615,47 @@
         </div>
       </section>
     {/if}
+    </div>
+    </div>
   {/if}
 </section>
 
 <style>
-  .wrap {
-    max-width: 900px;
-    margin: 0 auto;
+  .wrap { max-width: 1400px; margin: 0 auto; }
+  .pagehead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 18px;
+    position: sticky;
+    top: 62px;
+    z-index: 8;
+    background: var(--bg);
+    padding: 8px 0 12px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--line-soft);
   }
+  .title { font-family: var(--serif); font-size: 1.5rem; margin: 0; flex: 1; }
+  .when { color: var(--ink-mute); font-size: 0.9rem; }
+  .togs { display: flex; gap: 14px; }
+  .tog { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-mute); }
+  .toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--bg-soft);
+    padding: 0;
+  }
+  .toggle:hover { transform: none; }
+  .toggle .thumb {
+    position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+    border-radius: 50%; background: var(--ink-mute);
+    transition: left 0.15s ease, background 0.15s ease;
+  }
+  .toggle.on { background: var(--good-soft); border-color: var(--good); }
+  .toggle.on .thumb { left: 22px; background: var(--good); }
   .back {
     background: transparent;
     border: none;
@@ -494,9 +664,80 @@
     font-size: 0.9rem;
     padding: 4px 0;
     cursor: pointer;
-    margin-bottom: 18px;
   }
-  .back:hover { color: var(--ink); }
+  .back:hover { color: var(--ink); transform: none; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
+  .toc {
+    position: sticky;
+    top: 120px;
+    font-size: 0.88rem;
+    border-right: 1px solid var(--line-soft);
+    padding-right: 16px;
+  }
+  .toc-title {
+    margin: 0 0 8px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    font-weight: 600;
+  }
+  .toc ul { list-style: none; padding: 0; margin: 0; }
+  .toc li { margin: 0 0 4px; }
+  .toc a { color: var(--ink-soft); text-decoration: none; }
+  .toc a:hover { color: var(--ink); }
+
+  .hero { padding: 18px 20px; }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  .hero-side h2 { font-family: var(--serif); font-size: 1.2rem; margin: 0 0 4px; }
+  .hero-side.right { text-align: right; }
+  .hero-side .sub { margin: 0 0 10px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-mute); }
+  .kvs { margin: 0; }
+  .kvs div { display: flex; justify-content: space-between; gap: 12px; font-size: 0.88rem; }
+  .hero-side.right .kvs div { flex-direction: row-reverse; }
+  .kvs dt { color: var(--ink-mute); }
+  .kvs dd { margin: 0; }
+  .projrow {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .projrow .mono:first-child { text-align: right; }
+  .block { margin: 28px 0; }
+  .block h2 { font-size: 1.15rem; margin: 0 0 12px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .panel {
+    background: var(--bg-soft);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+  }
+  .panel h3 { font-size: 1rem; margin: 0 0 8px; }
+  .panel p { margin: 0 0 4px; }
+  .mute { color: var(--ink-mute); font-weight: 400; }
+  .l5 { list-style: none; padding: 0; margin: 0; }
+  .l5 li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 0.85rem; }
+  .wl { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  @media (max-width: 900px) {
+    .layout, .hero-grid, .two { grid-template-columns: 1fr; }
+    .toc { display: none; }
+    .hero-side.right { text-align: left; }
+  }
 
   .center { text-align: center; padding: 40px 20px; }
   .err { border-color: var(--accent); background: var(--accent-soft); }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { getPredictions, getStandings, getTeamStats, refreshSchedule } from "$lib/api";
   import type { Pitcher, PredictionsBundle, TeamStats, TeamStanding } from "$lib/types";
   import { fmtPct, fmtOdds, fmtRuns, todayISO, relativeTime, downloadCSV } from "$lib/format";
@@ -10,14 +11,17 @@
   let refreshing = $state(false);
   let error = $state<string | null>(null);
   let bundle = $state<PredictionsBundle | null>(null);
-  let teamsByName = $state<Map<string, TeamStats>>(new Map());
-  let rankByName = $state<Map<string, number>>(new Map());
+  let teamsById = $state<Map<number, TeamStats>>(new Map());
+  let rankById = $state<Map<number, number>>(new Map());
   let standingByTeamId = $state<Map<number, TeamStanding>>(new Map());
   let useOptimalExp = $state(true);
   let manualExp = $state(2.0);
   let includePitchers = $state(true);
   let includeHomeField = $state(true);
   let includeRecentForm = $state(true);
+  let league = $state<"all" | "al" | "nl">("all");
+  let sortKey = $state<"time" | "win" | "runs" | "total">("time");
+  let sortDir = $state<"asc" | "desc">("asc");
 
   function pitcherLine(p: Pitcher): string {
     if (p.blendSource === "nextStart" && p.projectedFip != null && p.expectedRuns != null) {
@@ -45,14 +49,14 @@
         getStandings(),
       ]);
       bundle = pred;
-      const byName = new Map<string, TeamStats>();
-      for (const t of ts.teams) byName.set(t.team, t);
-      teamsByName = byName;
+      const byId = new Map<number, TeamStats>();
+      for (const t of ts.teams) byId.set(t.teamId, t);
+      teamsById = byId;
       // Rank teams by Pythagorean win % (descending). 1 = best.
       const ranked = [...ts.teams].sort((a, b) => b.pythagWinPct - a.pythagWinPct);
-      const ranks = new Map<string, number>();
-      ranked.forEach((t, i) => ranks.set(t.team, i + 1));
-      rankByName = ranks;
+      const ranks = new Map<number, number>();
+      ranked.forEach((t, i) => ranks.set(t.teamId, i + 1));
+      rankById = ranks;
       // Standings keyed by team_id (the only stable join — names differ
       // between endpoints: standings says "Rays", schedule says "Tampa Bay Rays").
       const stByTeam = new Map<number, TeamStanding>();
@@ -111,7 +115,7 @@
       counts.set(k, (counts.get(k) ?? 0) + 1);
     }
     const seen = new Map<string, number>();
-    return bundle.games.map((g) => {
+    let rows = bundle.games.map((g) => {
       const k = `${g.home}|${g.away}`;
       const total = counts.get(k) ?? 1;
       if (total <= 1) return { ...g, gameTag: "" };
@@ -119,14 +123,46 @@
       seen.set(k, idx);
       return { ...g, gameTag: `Game ${idx}` };
     });
+    if (league !== "all") {
+      const want = league === "al" ? 103 : 104;
+      rows = rows.filter((g) => standingByTeamId.get(g.homeTeamId)?.leagueId === want);
+    }
+    const dir = sortDir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      let c = 0;
+      if (sortKey === "time") {
+        c = (a.gameDateTime ?? "").localeCompare(b.gameDateTime ?? "") || a.gamePk - b.gamePk;
+      } else if (sortKey === "win") {
+        c = a.homeWinProb - b.homeWinProb;
+      } else if (sortKey === "runs") {
+        c = a.homePredRuns - b.homePredRuns;
+      } else {
+        c = a.totalRuns - b.totalRuns;
+      }
+      return c * dir;
+    });
+    return rows;
   });
 
-  function recordFor(teamName: string): string | null {
-    const ts = teamsByName.get(teamName);
-    if (!ts) return null;
-    const st = standingByTeamId.get(ts.teamId);
+  function recordFor(teamId: number): string | null {
+    const st = standingByTeamId.get(teamId);
     if (!st) return null;
     return `${st.wins}-${st.losses}`;
+  }
+
+  function firstPitch(iso: string | null): string {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+
+  function toggleSort(key: typeof sortKey) {
+    if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else {
+      sortKey = key;
+      sortDir = key === "time" ? "asc" : "desc";
+    }
   }
 
   // Link to the game-detail route, carrying the current date + toggle + exponent
@@ -280,6 +316,11 @@
       <span class="badge">x = {bundle.exponent.toFixed(3)}</span>
       <span class="badge">League avg: {bundle.leagueAvgRuns.toFixed(2)} R/team/g</span>
       <span class="badge">Updated {relativeTime(bundle.lastUpdated)}</span>
+      <span class="league">
+        <button type="button" class="ghost small" class:on={league === "all"} onclick={() => league = "all"}>All</button>
+        <button type="button" class="ghost small" class:on={league === "al"} onclick={() => league = "al"}>AL</button>
+        <button type="button" class="ghost small" class:on={league === "nl"} onclick={() => league = "nl"}>NL</button>
+      </span>
     </div>
 
     {#if bundle.games.length === 0}
@@ -299,166 +340,74 @@
         {/if}
       </div>
     {:else}
-      <div class="matchup-grid">
-        {#each taggedGames as g (g.gamePk)}
-          {@const awayTeam = teamsByName.get(g.away)}
-          {@const homeTeam = teamsByName.get(g.home)}
-          {@const awayWin = g.awayWinProb >= 0.5}
-          {@const homeWin = g.homeWinProb >= 0.5}
-          {@const awayRec = recordFor(g.away)}
-          {@const homeRec = recordFor(g.home)}
-          <a class="matchup-link" href={gameHref(g.gamePk)} aria-label="{g.away} at {g.home} — full breakdown">
-          <article class="card matchup">
-            {#if g.gameTag}
-              <div class="dh-tag">{g.gameTag}</div>
-            {/if}
-
-            <div class="grid">
-              <!-- AWAY (left) -->
-              <div class="side away">
-                <h2 class="tname">{g.away}</h2>
-                <span class="role">
-                  Away
-                  {#if awayRec}<span class="record">({awayRec})</span>{/if}
-                </span>
-                {#if g.awayPitcher}
-                  <div class="pitcher" class:pitcher-faded={!g.awayPitcher.applied}>
-                    <span class="pname">{g.awayPitcher.name}</span>
-                    <span class="pera">
-                      {pitcherLine(g.awayPitcher)}
-                      {#if !g.awayPitcher.eligibleSample}
-                        <span class="pnote">(small sample)</span>
-                      {/if}
-                    </span>
+      <div class="slate">
+        <table>
+          <thead>
+            <tr>
+              <th><button type="button" class="thb" onclick={() => toggleSort("time")}>Time</button></th>
+              <th>Teams</th>
+              <th>Pitchers</th>
+              <th><button type="button" class="thb" onclick={() => toggleSort("win")}>Win</button></th>
+              <th>Fair</th>
+              <th><button type="button" class="thb" onclick={() => toggleSort("runs")}>Runs</button></th>
+              <th><button type="button" class="thb" onclick={() => toggleSort("total")}>Total</button></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each taggedGames as g (g.gamePk)}
+              {@const awayTeam = teamsById.get(g.awayTeamId)}
+              {@const homeTeam = teamsById.get(g.homeTeamId)}
+              {@const awayWin = g.awayWinProb >= 0.5}
+              {@const homeWin = g.homeWinProb >= 0.5}
+              <tr class="gamerow" onclick={() => goto(gameHref(g.gamePk))}>
+                <td class="time">
+                  <span class="d">{g.date.slice(5)}</span>
+                  <span class="t">{firstPitch(g.gameDateTime)}</span>
+                  {#if g.gameTag}<span class="dh">{g.gameTag}</span>{/if}
+                </td>
+                <td class="teams">
+                  <div class="tl away">
+                    <span class="tn">{g.away}</span>
+                    <span class="rec">{recordFor(g.awayTeamId) ?? ""}</span>
+                    <span class="mini">#{rankById.get(g.awayTeamId) ?? "—"} · {rpg(awayTeam)} R/G · {rapg(awayTeam)} RA/G</span>
+                    {#if g.awayRecent}<span class="mini">L{g.awayRecent.games}: {g.awayRecent.rsPerGame.toFixed(1)}/{g.awayRecent.raPerGame.toFixed(1)}</span>{/if}
                   </div>
-                {:else}
-                  <div class="pitcher pitcher-tbd">
-                    <span class="pname">Starter TBD</span>
+                  <div class="tl home">
+                    <span class="tn">{g.home}</span>
+                    <span class="rec">{recordFor(g.homeTeamId) ?? ""}</span>
+                    <span class="mini">#{rankById.get(g.homeTeamId) ?? "—"} · {rpg(homeTeam)} R/G · {rapg(homeTeam)} RA/G</span>
+                    {#if g.homeRecent}<span class="mini">L{g.homeRecent.games}: {g.homeRecent.rsPerGame.toFixed(1)}/{g.homeRecent.raPerGame.toFixed(1)}</span>{/if}
                   </div>
-                {/if}
-                {#if g.awayRecent}
-                  <div class="recent" class:pitcher-faded={!g.awayRecent.applied}>
-                    <span class="pera">
-                      L{g.awayRecent.games}: {g.awayRecent.rsPerGame.toFixed(1)} R/G · {g.awayRecent.raPerGame.toFixed(1)} RA/G
-                      {#if !g.awayRecent.eligibleSample}
-                        <span class="pnote">(small sample)</span>
-                      {/if}
-                    </span>
+                </td>
+                <td class="arms">
+                  <div class:fade={g.awayPitcher && !g.awayPitcher.applied}>
+                    <span class="pn">{g.awayPitcher?.name ?? "TBD"}</span>
+                    <span class="ps">{g.awayPitcher ? pitcherLine(g.awayPitcher) : ""}</span>
                   </div>
-                {/if}
-              </div>
-
-              <!-- CENTER: probs, bars, projected runs -->
-              <div class="center">
-                <div class="probs">
-                  <div class="prob" class:winner={awayWin}>
-                    {fmtPct(g.awayWinProb, 1)}
+                  <div class:fade={g.homePitcher && !g.homePitcher.applied}>
+                    <span class="pn">{g.homePitcher?.name ?? "TBD"}</span>
+                    <span class="ps">{g.homePitcher ? pitcherLine(g.homePitcher) : ""}</span>
                   </div>
-                  <div class="prob" class:winner={homeWin}>
-                    {fmtPct(g.homeWinProb, 1)}
-                  </div>
-                </div>
-                <div class="bars">
-                  <div class="bar bar-away" class:winner={awayWin}>
-                    <span class="fill" style="--w: {(g.awayWinProb * 100).toFixed(1)}%"></span>
-                  </div>
-                  <div class="bar bar-home" class:winner={homeWin}>
-                    <span class="fill" style="--w: {(g.homeWinProb * 100).toFixed(1)}%"></span>
-                  </div>
-                </div>
-                <div class="winlabels">
-                  <span class="winlabel" class:winner={awayWin}>{g.away.split(" ").pop()} Win</span>
-                  <span class="winlabel" class:winner={homeWin}>{g.home.split(" ").pop()} Win</span>
-                </div>
-
-                <div class="proj">
-                  <div class="proj-num">{fmtRuns(g.awayPredRuns)}</div>
-                  <div class="proj-label">Projected Runs</div>
-                  <div class="proj-num">{fmtRuns(g.homePredRuns)}</div>
-                </div>
-
-                <div class="odds">
-                  <span class="odds-val" class:winner={awayWin}>{fmtOdds(g.awayFairOdds)}</span>
-                  <span class="odds-label">Fair Odds</span>
-                  <span class="odds-val" class:winner={homeWin}>{fmtOdds(g.homeFairOdds)}</span>
-                </div>
-              </div>
-
-              <!-- HOME (right) -->
-              <div class="side home">
-                <h2 class="tname">{g.home}</h2>
-                <span class="role">
-                  Home
-                  {#if homeRec}<span class="record">({homeRec})</span>{/if}
-                </span>
-                {#if g.homePitcher}
-                  <div class="pitcher" class:pitcher-faded={!g.homePitcher.applied}>
-                    <span class="pname">{g.homePitcher.name}</span>
-                    <span class="pera">
-                      {pitcherLine(g.homePitcher)}
-                      {#if !g.homePitcher.eligibleSample}
-                        <span class="pnote">(small sample)</span>
-                      {/if}
-                    </span>
-                  </div>
-                {:else}
-                  <div class="pitcher pitcher-tbd">
-                    <span class="pname">Starter TBD</span>
-                  </div>
-                {/if}
-                {#if g.homeRecent}
-                  <div class="recent" class:pitcher-faded={!g.homeRecent.applied}>
-                    <span class="pera">
-                      L{g.homeRecent.games}: {g.homeRecent.rsPerGame.toFixed(1)} R/G · {g.homeRecent.raPerGame.toFixed(1)} RA/G
-                      {#if !g.homeRecent.eligibleSample}
-                        <span class="pnote">(small sample)</span>
-                      {/if}
-                    </span>
-                  </div>
-                {/if}
-              </div>
-
-              <!-- AWAY stats (under left) -->
-              <div class="stats stats-away">
-                <div class="stat">
-                  <span class="stat-label">Rank</span>
-                  <span class="stat-val">{rankByName.get(g.away) ?? "—"}</span>
-                </div>
-                <div class="stat">
-                  <span class="stat-label">R/G</span>
-                  <span class="stat-val">{rpg(awayTeam)}</span>
-                </div>
-                <div class="stat">
-                  <span class="stat-label">RA/G</span>
-                  <span class="stat-val">{rapg(awayTeam)}</span>
-                </div>
-              </div>
-
-              <!-- center spacer (total runs under projected) -->
-              <div class="total-line">
-                <span class="total-label">Total Runs</span>
-                <span class="total-val">{fmtRuns(g.totalRuns)}</span>
-              </div>
-
-              <!-- HOME stats (under right) -->
-              <div class="stats stats-home">
-                <div class="stat">
-                  <span class="stat-label">Rank</span>
-                  <span class="stat-val">{rankByName.get(g.home) ?? "—"}</span>
-                </div>
-                <div class="stat">
-                  <span class="stat-label">R/G</span>
-                  <span class="stat-val">{rpg(homeTeam)}</span>
-                </div>
-                <div class="stat">
-                  <span class="stat-label">RA/G</span>
-                  <span class="stat-val">{rapg(homeTeam)}</span>
-                </div>
-              </div>
-            </div>
-          </article>
-          </a>
-        {/each}
+                </td>
+                <td class="win mono">
+                  <span class:good={awayWin} class:bad={!awayWin}>{fmtPct(g.awayWinProb, 1)}</span>
+                  <span class:good={homeWin} class:bad={!homeWin}>{fmtPct(g.homeWinProb, 1)}</span>
+                </td>
+                <td class="fair mono">
+                  <span class:good={awayWin}>{fmtOdds(g.awayFairOdds)}</span>
+                  <span class:good={homeWin}>{fmtOdds(g.homeFairOdds)}</span>
+                </td>
+                <td class="runs mono">
+                  <span>{fmtRuns(g.awayPredRuns)}</span>
+                  <span>{fmtRuns(g.homePredRuns)}</span>
+                </td>
+                <td class="tot mono">{fmtRuns(g.totalRuns)}</td>
+                <td class="go">→</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       </div>
     {/if}
 
@@ -483,6 +432,10 @@
     gap: 16px 24px;
     align-items: end;
     margin-bottom: 20px;
+    position: sticky;
+    top: 62px;
+    z-index: 8;
+    background: var(--bg-elev);
   }
   @media (max-width: 1100px) {
     .controls {
@@ -613,304 +566,67 @@
     }
   }
 
-  /* ── MATCHUP CARDS ─────────────────────────────────────── */
-  .matchup-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 14px;
-  }
-  .matchup-link {
-    display: block;
-    text-decoration: none;
-    color: inherit;
+  .league { display: flex; gap: 4px; margin-left: 8px; }
+  .league .on { background: var(--ink); color: var(--bg-elev); border-color: var(--ink); }
+  .slate {
+    overflow-x: auto;
+    border: 1px solid var(--line);
     border-radius: var(--radius);
+    background: var(--bg-elev);
   }
-  .matchup-link:hover {
-    text-decoration: none;
-  }
-  .matchup {
-    position: relative;
-    padding: 22px 26px;
-    min-width: 0;
-    overflow: hidden;
-    height: 100%;
-    transition: border-color 0.15s ease, transform 0.15s ease;
-  }
-  .matchup-link:hover .matchup {
-    border-color: var(--line);
-    transform: translateY(-2px);
-  }
-  .matchup-link:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .dh-tag {
-    position: absolute;
-    top: 10px;
-    right: 14px;
+  .slate table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  .slate th {
+    text-align: left;
+    padding: 8px 10px;
     font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--ink-mute);
-    border: 1px solid var(--line-soft);
-    padding: 2px 8px;
-    border-radius: var(--radius-sm);
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1fr);
-    grid-template-rows: auto auto;
-    gap: 18px 20px;
-    align-items: start;
-  }
-  .side {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .side.away { align-items: flex-start; text-align: left; }
-  .side.home { align-items: flex-end; text-align: right; }
-  .tname {
-    font-family: var(--serif);
-    font-size: 1.5rem;
-    line-height: 1.15;
-    margin: 0;
-    color: var(--ink);
-  }
-  .role {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--ink-mute);
-  }
-  .record {
-    font-family: var(--mono);
-    margin-left: 4px;
-    font-variant-numeric: tabular-nums;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-
-  .pitcher {
-    margin-top: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    font-size: 0.82rem;
-    line-height: 1.25;
-  }
-  .pitcher .pname {
-    color: var(--ink);
     font-weight: 500;
-  }
-  .pitcher .pera {
-    font-family: var(--mono);
-    color: var(--ink-mute);
-    font-size: 0.74rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .pitcher-faded .pname,
-  .pitcher-faded .pera { color: var(--ink-mute); }
-  .pitcher-tbd .pname { color: var(--ink-mute); font-style: italic; }
-  .pnote {
-    font-style: italic;
-    opacity: 0.75;
-  }
-  .side.home .pitcher { align-items: flex-end; }
-
-  .recent {
-    margin-top: 4px;
-    font-size: 0.74rem;
-    line-height: 1.25;
-  }
-  .recent .pera {
-    font-family: var(--mono);
-    color: var(--ink-mute);
-    font-variant-numeric: tabular-nums;
-  }
-  .side.home .recent { text-align: right; }
-
-  /* CENTER COLUMN */
-  .center {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-  .probs {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    align-items: end;
-  }
-  .prob {
-    font-size: 2rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink-soft);
-    line-height: 1;
-  }
-  .prob:first-child { text-align: right; }
-  .prob:last-child { text-align: left; }
-  .prob.winner { color: var(--good); }
-
-  .bars {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-  .bar {
-    height: 14px;
-    background: var(--bg-soft);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-    position: relative;
-  }
-  .bar .fill {
-    display: block;
-    height: 100%;
-    width: var(--w);
-    background: var(--bad);
-    transition: width 0.25s ease;
-  }
-  .bar.winner .fill { background: var(--good); }
-  .bar-away .fill {
-    margin-left: auto;
-  }
-
-  .winlabels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-top: 2px;
-  }
-  .winlabel {
-    font-size: 0.82rem;
-    color: var(--ink-mute);
-    font-weight: 500;
-  }
-  .winlabels .winlabel:first-child { text-align: right; }
-  .winlabels .winlabel:last-child { text-align: left; }
-  .winlabel.winner {
-    color: var(--good);
-    font-weight: 600;
-  }
-
-  .proj {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    gap: 14px;
-    align-items: center;
-    padding: 14px 18px;
-    background: var(--bg-soft);
-    border: 1px solid var(--line-soft);
-    border-radius: var(--radius-sm);
-    margin-top: 10px;
-  }
-  .proj-num {
-    font-family: var(--mono);
-    font-size: 1.4rem;
-    font-weight: 600;
-    color: var(--ink);
-    font-variant-numeric: tabular-nums;
-  }
-  .proj-num:first-child { text-align: right; }
-  .proj-num:last-child { text-align: left; }
-  .proj-label {
-    font-size: 0.75rem;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     color: var(--ink-mute);
+    border-bottom: 1px solid var(--line);
     white-space: nowrap;
+    background: var(--bg-elev);
+    position: sticky;
+    top: 0;
   }
-
-  .odds {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    gap: 14px;
-    align-items: center;
-    margin-top: 6px;
-    font-size: 0.85rem;
+  .thb {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    padding: 0;
+    cursor: pointer;
   }
-  .odds-val {
-    font-family: var(--mono);
-    font-variant-numeric: tabular-nums;
-    color: var(--ink-soft);
+  .thb:hover { transform: none; color: var(--ink); }
+  .slate td {
+    padding: 10px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
   }
-  .odds-val:first-child { text-align: right; }
-  .odds-val:last-child { text-align: left; }
-  .odds-val.winner { color: var(--good); font-weight: 600; }
-  .odds-label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--ink-mute);
-  }
-
-  /* STATS ROW (under each side) */
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    padding-top: 14px;
-    border-top: 1px solid var(--line-soft);
-  }
-  .stats-home { direction: rtl; }
-  .stats-home .stat { direction: ltr; }
-  .stat {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .stat-label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--ink-mute);
-  }
-  .stat-val {
-    font-family: var(--mono);
-    font-size: 1rem;
-    color: var(--ink);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .total-line {
-    display: flex;
-    justify-content: center;
-    align-items: baseline;
-    gap: 10px;
-    padding-top: 14px;
-    border-top: 1px solid var(--line-soft);
-  }
-  .total-label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--ink-mute);
-  }
-  .total-val {
-    font-family: var(--mono);
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: var(--ink);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Two cards per row on wider screens */
-  @media (min-width: 900px) {
-    .matchup-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-  }
-
-  /* Stack columns on narrow screens */
-  @media (max-width: 640px) {
-    .grid {
-      grid-template-columns: 1fr;
-      gap: 14px;
-    }
-    .side.home { align-items: flex-start; text-align: left; }
-    .stats-home { direction: ltr; }
-  }
+  .gamerow { cursor: pointer; }
+  .gamerow:hover td { background: var(--bg-soft); }
+  .time { white-space: nowrap; min-width: 5.5em; }
+  .time .d { display: block; color: var(--ink-mute); font-size: 0.75rem; }
+  .time .t { display: block; font-weight: 600; }
+  .time .dh { display: block; font-size: 0.68rem; color: var(--ink-mute); text-transform: uppercase; }
+  .teams { min-width: 16em; }
+  .tl { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; margin-bottom: 8px; }
+  .tl:last-child { margin-bottom: 0; }
+  .tn { font-weight: 600; color: var(--ink); }
+  .rec { font-family: var(--mono); font-size: 0.78rem; color: var(--ink-mute); }
+  .mini { grid-column: 1 / -1; font-family: var(--mono); font-size: 0.72rem; color: var(--ink-mute); }
+  .arms { min-width: 11em; }
+  .arms > div { margin-bottom: 8px; }
+  .arms > div:last-child { margin-bottom: 0; }
+  .pn { display: block; font-weight: 500; }
+  .ps { display: block; font-family: var(--mono); font-size: 0.72rem; color: var(--ink-mute); white-space: nowrap; }
+  .fade .pn, .fade .ps { color: var(--ink-mute); }
+  .win, .fair, .runs { white-space: nowrap; }
+  .win span, .fair span, .runs span { display: block; font-variant-numeric: tabular-nums; }
+  .tot { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; vertical-align: middle; }
+  .go { color: var(--ink-mute); vertical-align: middle; }
+  .good { color: var(--good); font-weight: 600; }
+  .bad { color: var(--bad); }
 </style>
