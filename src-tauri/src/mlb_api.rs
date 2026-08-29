@@ -250,6 +250,31 @@ fn http_client() -> Result<&'static reqwest::Client> {
     HTTP.as_ref().map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+async fn mlb_get_json<T: serde::de::DeserializeOwned>(url: &str, what: &str) -> Result<T> {
+    let client = http_client()?;
+    let mut last_err = None;
+    for _ in 0..2u8 {
+        let result = async {
+            client
+                .get(url)
+                .send()
+                .await
+                .with_context(|| format!("GET {url} failed"))?
+                .error_for_status()
+                .with_context(|| format!("non-2xx from {what}"))?
+                .json::<T>()
+                .await
+                .with_context(|| format!("failed to deserialize {what}"))
+        }
+        .await;
+        match result {
+            Ok(v) => return Ok(v),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.expect("retry loop ran"))
+}
+
 // Baseball notation: "35.2" means 35 + 2/3 innings (NOT 35.2 decimal).
 // The fractional part is always 0, 1, or 2 thirds-of-an-inning. Anything else
 // is malformed input — return None rather than silently producing a wrong value.
@@ -277,9 +302,8 @@ fn normalize(resp: ApiScheduleResponse) -> Vec<Game> {
     for day in resp.dates {
         let date = day.date;
         for g in day.games {
-            // The schedule API keeps placeholder records for postponed/cancelled games AND
-            // the rescheduled record (same gamePk, different dates[] entry). Drop the
-            // placeholder — otherwise the rescheduled date shows the matchup twice.
+            // Placeholder rows for postponed/cancelled games sit next to the rescheduled
+            // record (same gamePk). Drop the placeholder.
             if matches!(g.status.detailed_state.as_str(), "Postponed" | "Cancelled") {
                 continue;
             }
@@ -325,6 +349,22 @@ fn normalize(resp: ApiScheduleResponse) -> Vec<Game> {
         }
     }
     out.retain(|g| g.is_regular_season());
+    dedupe_by_game_pk(out)
+}
+
+/// Suspended-then-resumed games show up twice (original start + continuation),
+/// same gamePk, both Final with the same score. Last listing wins.
+pub(crate) fn dedupe_by_game_pk(games: Vec<Game>) -> Vec<Game> {
+    let mut idx: HashMap<i64, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(games.len());
+    for g in games {
+        if let Some(&i) = idx.get(&g.game_pk) {
+            out[i] = g;
+        } else {
+            idx.insert(g.game_pk, out.len());
+            out.push(g);
+        }
+    }
     out
 }
 
@@ -557,17 +597,7 @@ pub async fn fetch_standings(season: i32) -> Result<Vec<TeamStanding>> {
         "{}?leagueId=103,104&season={}&standingsTypes=regularSeason",
         STANDINGS_BASE, season
     );
-    let client = http_client()?;
-    let resp: ApiStandingsResponse = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("GET {} failed", url))?
-        .error_for_status()
-        .context("non-2xx response from MLB standings API")?
-        .json()
-        .await
-        .context("failed to deserialize MLB standings")?;
+    let resp: ApiStandingsResponse = mlb_get_json(&url, "MLB standings").await?;
 
     let mut out = Vec::with_capacity(30);
     for rec in resp.records {
@@ -709,5 +739,31 @@ mod tests {
         assert_eq!(parse_innings(Some("7.5")), None);
         assert_eq!(parse_innings(Some("abc")), None);
         assert_eq!(parse_innings(Some("7.x")), None);
+    }
+
+    #[test]
+    fn duplicate_game_pk_last_listing_wins() {
+        let a = Game {
+            game_pk: 824912,
+            date: "2026-06-16".into(),
+            game_date_time: Some("first".into()),
+            status: GameStatus::Final,
+            series_description: Some("Regular Season".into()),
+            home_team_id: 144,
+            home_team_name: "Atlanta Braves".into(),
+            home_runs: Some(2),
+            away_team_id: 137,
+            away_team_name: "San Francisco Giants".into(),
+            away_runs: Some(7),
+            home_pitcher_id: None,
+            home_pitcher_name: None,
+            away_pitcher_id: None,
+            away_pitcher_name: None,
+        };
+        let mut b = a.clone();
+        b.game_date_time = Some("resume".into());
+        let out = dedupe_by_game_pk(vec![a, b]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].game_date_time.as_deref(), Some("resume"));
     }
 }

@@ -4,7 +4,7 @@ Project-specific guidance for Claude Code working on this repo. Read this first.
 
 ## What this is
 
-A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment, a home-field advantage shift, and a recent-form (L20) blend. Also has a Standings page, a Stats page (model-flavored leaderboards: luck, OS/DS, hot/cold), and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
+A desktop app — **Rust + Tauri 2 + SvelteKit + TypeScript** — that predicts MLB games using Bill James' Pythagorean Expectation, augmented with a starting-pitcher adjustment, a home-field advantage shift, and a recent-form (L20) blend. Also has a Standings page, a Stats page (model-flavored leaderboards: luck, OS/DS, hot/cold), a Track page (historical replay vs box scores), and a Playground sandbox. It's a Tauri rewrite of the original R scripts (still in [`legacy/`](./legacy) for reference — they're not live code).
 
 Public MLB Stats API (`https://statsapi.mlb.com`) is the only data source. No auth, no rate limits in practice. Cached in-process for 10 minutes (schedule + standings) / 1 hour (pitcher stats).
 
@@ -15,15 +15,17 @@ src-tauri/src/
 ├── mlb_api.rs     # HTTP client for /schedule, /people, /standings endpoints
 ├── model.rs       # Pythagorean, log5, OS/DS, pitcher blend, home-field shift,
 │                  # exponent fitter
+├── backtest.rs    # replay finished games vs box scores
 └── lib.rs         # Tauri commands + AppState cache (schedule + pitchers + standings)
 
 crates/pns-core/   # vendored next-start scorer (from pitcher-next-start); frozen model in models/
 
 src/
 ├── routes/
-│   ├── +page.svelte                # Predictions (card-per-matchup)
+│   ├── +page.svelte                # Predictions (time-sorted slate table)
 │   ├── standings/+page.svelte      # Division standings + wild-card race
 │   ├── stats/+page.svelte          # Model-flavored leaderboards (luck, OS/DS, hot/cold)
+│   ├── track/+page.svelte          # Historical replay vs outcomes
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
 │   └── playground/+page.svelte     # Team table + matchup editor
 └── lib/
@@ -68,7 +70,7 @@ All three toggles live on the Predictions page (apply server-side via `get_predi
 
 ## Gotchas (real bugs we've hit)
 
-1. **Postponed-game duplicates.** The MLB schedule endpoint returns *two* records for any postponed-then-rescheduled game (same gamePk, different `dates[]` entries). One has `detailedState = "Postponed"` with `officialDate` pointing at the rescheduled day. `normalize()` in `mlb_api.rs` skips `detailedState in {Postponed, Cancelled}` to dedupe. If you ever see a "triple-header," this is back.
+1. **Duplicate gamePks on the schedule.** Postponed/cancelled placeholders sit next to the rescheduled record (`detailedState` skip in `normalize`). Suspended-then-resumed games are worse: *both* listings are `Final` with the same score (e.g. 2026-06-16 Giants @ Braves, `gamePk` 824912). `dedupe_by_game_pk()` keeps one. If a keyed `{#each}` uses `gamePk` and a duplicate slips through, Svelte throws `each_key_duplicate` and the page freezes on the spinner.
 
 2. **Doubleheader rows.** A real split-DH has two `GameRow`s with identical (home, away). In Svelte `{#each}`, **do not key by `home + away`** — it throws `each_key_duplicate` at render time, which silently aborts the table and freezes the spinner with no terminal output. Key by index, or plumb `gamePk` through. See `memory/predictions_doubleheader_key.md`.
 
@@ -83,6 +85,8 @@ All three toggles live on the Predictions page (apply server-side via `get_predi
 7. **MLB API mixes string and int types.** `wins`/`losses`/`runDifferential` are ints, but `divisionRank`/`leagueRank`/`wildCardRank` are *strings* like `"1"`. Type DTOs accordingly and parse in normalize. If deserialization fails with "expected i64, got string," this is why.
 
 8. **JS / Rust model drift risk.** The Playground mirrors the model in JS for instant slider feedback. When you change a constant or formula in `model.rs`, you MUST also update `src/routes/playground/+page.svelte`. Search for the constant name in both files.
+
+9. **Track vs live Predictions.** Track replays a finished game using only `date < D` (no same-day leak). Live `get_predictions` uses the full season-to-date cache, including games already final today. Do not "fix" Track by feeding it current season totals.
 
 ## Commands
 

@@ -13,6 +13,7 @@
     { id: "homefield", label: "9 · Home-field advantage" },
     { id: "recent", label: "10 · Recent form weighting" },
     { id: "race", label: "11 · Magic number & ROS walk" },
+    { id: "track", label: "12 · Track record" },
   ];
 </script>
 
@@ -415,6 +416,24 @@
       only if that team uniquely finishes first, or (on a wins tie) uniquely leads the
       season series among the tied group. A simulated tie that head-to-head cannot break
       is not a unique division win — that's why the P(win) column may not sum to 100%.
+    </p>
+  </section>
+
+  <section id="track">
+    <h2>12 · Track record</h2>
+    <p>
+      The <a href="/track">Track</a> tab pulls every finished game this season from the MLB
+      schedule and re-runs the model, then compares the pick and predicted score to the box
+      score. For a game on date <em>D</em>, team stats, the fitted exponent, L20, and starter
+      ERA use only games <em>before</em> D — same-day results never leak into the prediction.
+    </p>
+    <p>
+      <strong>Right winner</strong> is how often the side with p ≥ 50% actually won.
+      <strong>Score error</strong> is mean absolute error on the combined run total (and on
+      each side). <strong>Brier</strong> is the mean squared error of the probability (0.25 is
+      a coin flip; lower is better). Opening-week games are skipped until both clubs have 10
+      completed games. Toggle pitcher / home field / recent form and run again to see whether
+      a feature earns its keep.
     </p>
   </section>
 

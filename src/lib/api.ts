@@ -7,6 +7,7 @@ import type {
   GameContextBundle,
   DivisionRaceBundle,
   WlOverride,
+  BacktestBundle,
 } from "./types";
 
 export async function getPredictions(opts: {
@@ -67,4 +68,13 @@ export async function getDivisionRace(opts: {
   wlOverrides?: WlOverride[];
 } = {}): Promise<DivisionRaceBundle> {
   return await invoke<DivisionRaceBundle>("get_division_race", opts);
+}
+
+export async function runBacktest(opts: {
+  season?: number;
+  includePitchers?: boolean;
+  includeHomeField?: boolean;
+  includeRecentForm?: boolean;
+} = {}): Promise<BacktestBundle> {
+  return await invoke<BacktestBundle>("run_backtest", opts);
 }

@@ -308,3 +308,53 @@ export type DivisionRaceBundle = {
   tiebreakerNote: string;
   teams: DivisionRaceRow[];
 };
+
+export type BacktestGame = {
+  gamePk: number;
+  date: string;
+  home: string;
+  away: string;
+  pHome: number;
+  homeWon: boolean;
+  pickedHome: boolean;
+  hit: boolean;
+  predHomeRuns: number;
+  predAwayRuns: number;
+  actualHomeRuns: number;
+  actualAwayRuns: number;
+  brier: number;
+};
+
+export type CalibBucket = {
+  label: string;
+  predicted: number;
+  actual: number;
+  n: number;
+};
+
+export type MonthRow = {
+  month: string;
+  n: number;
+  hitRate: number;
+  brier: number;
+  totalRunsMae: number;
+};
+
+export type BacktestBundle = {
+  season: number;
+  n: number;
+  skippedEarly: number;
+  skippedTied: number;
+  hitRate: number;
+  brier: number;
+  logLoss: number;
+  totalRunsMae: number;
+  homeRunsMae: number;
+  awayRunsMae: number;
+  includePitchers: boolean;
+  includeHomeField: boolean;
+  includeRecentForm: boolean;
+  calibration: CalibBucket[];
+  monthly: MonthRow[];
+  games: BacktestGame[];
+};

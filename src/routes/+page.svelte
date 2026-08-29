@@ -37,7 +37,7 @@
     loading = true;
     error = null;
     try {
-      const [pred, ts, st] = await Promise.all([
+      const [predR, tsR, stR] = await Promise.allSettled([
         getPredictions({
           date,
           exponent: useOptimalExp ? undefined : manualExp,
@@ -48,20 +48,31 @@
         getTeamStats({ exponent: useOptimalExp ? undefined : manualExp }),
         getStandings(),
       ]);
-      bundle = pred;
-      const byId = new Map<number, TeamStats>();
-      for (const t of ts.teams) byId.set(t.teamId, t);
-      teamsById = byId;
-      // Rank teams by Pythagorean win % (descending). 1 = best.
-      const ranked = [...ts.teams].sort((a, b) => b.pythagWinPct - a.pythagWinPct);
-      const ranks = new Map<number, number>();
-      ranked.forEach((t, i) => ranks.set(t.teamId, i + 1));
-      rankById = ranks;
-      // Standings keyed by team_id (the only stable join — names differ
-      // between endpoints: standings says "Rays", schedule says "Tampa Bay Rays").
-      const stByTeam = new Map<number, TeamStanding>();
-      for (const t of st.teams) stByTeam.set(t.teamId, t);
-      standingByTeamId = stByTeam;
+      if (predR.status === "rejected") throw predR.reason;
+      bundle = predR.value;
+
+      if (tsR.status === "fulfilled") {
+        const ts = tsR.value;
+        const byId = new Map<number, TeamStats>();
+        for (const t of ts.teams) byId.set(t.teamId, t);
+        teamsById = byId;
+        const ranked = [...ts.teams].sort((a, b) => b.pythagWinPct - a.pythagWinPct);
+        const ranks = new Map<number, number>();
+        ranked.forEach((t, i) => ranks.set(t.teamId, i + 1));
+        rankById = ranks;
+      } else {
+        teamsById = new Map();
+        rankById = new Map();
+      }
+
+      // Standings is W-L decoration + AL/NL filter. Don't take the slate down with it.
+      if (stR.status === "fulfilled") {
+        const stByTeam = new Map<number, TeamStanding>();
+        for (const t of stR.value.teams) stByTeam.set(t.teamId, t);
+        standingByTeamId = stByTeam;
+      } else {
+        standingByTeamId = new Map();
+      }
     } catch (e) {
       error = String(e);
     } finally {
@@ -123,7 +134,7 @@
       seen.set(k, idx);
       return { ...g, gameTag: `Game ${idx}` };
     });
-    if (league !== "all") {
+    if (league !== "all" && standingByTeamId.size > 0) {
       const want = league === "al" ? 103 : 104;
       rows = rows.filter((g) => standingByTeamId.get(g.homeTeamId)?.leagueId === want);
     }

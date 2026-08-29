@@ -4,6 +4,7 @@
 pub mod mlb_api;
 pub mod model;
 pub mod division_race;
+pub mod backtest;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -24,6 +25,7 @@ use model::{
     RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
 use division_race::{build_division_race, WlOverride, DEFAULT_N_SIMS, DEFAULT_SEED};
+use backtest::{run_backtest, BacktestBundle, StarterLog};
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 const PITCHER_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour — ERA changes slowly
@@ -44,6 +46,8 @@ struct Cache {
     boxscores: HashMap<i64, (Lineups, Instant)>,
     bullpens: HashMap<(i32, i32), (Bullpen, Instant)>,
     next_starts: HashMap<String, (HashMap<i32, NextStartCard>, Instant)>,
+    starter_logs: Option<(i32, Vec<StarterLog>, Instant)>,
+    backtests: HashMap<(i32, bool, bool, bool), BacktestBundle>,
 }
 
 impl AppState {
@@ -72,7 +76,8 @@ impl AppState {
         let games = fetch_schedule(season).await.map_err(|e| e.to_string())?;
         let mut cache = self.cache.lock().unwrap();
         cache.schedule = Some((season, games.clone(), Instant::now()));
-        cache.optimal_exp.remove(&season); // invalidate
+        cache.optimal_exp.remove(&season);
+        cache.backtests.retain(|(s, _, _, _), _| *s != season);
         Ok(games)
     }
 
@@ -238,6 +243,40 @@ impl AppState {
         }
         Ok(bp)
     }
+
+    async fn get_starter_logs(&self, season: i32) -> Result<Vec<StarterLog>, String> {
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some((s, logs, t)) = &cache.starter_logs {
+                if *s == season && t.elapsed() < PITCHER_CACHE_TTL {
+                    return Ok(logs.clone());
+                }
+            }
+        }
+        let logs = tokio::task::spawn_blocking(move || fetch_starter_logs(season))
+            .await
+            .map_err(|e| e.to_string())??;
+        let mut cache = self.cache.lock().unwrap();
+        cache.starter_logs = Some((season, logs.clone(), Instant::now()));
+        Ok(logs)
+    }
+}
+
+fn fetch_starter_logs(season: i32) -> Result<Vec<StarterLog>, String> {
+    let client = pns_core::data::MlbStatsClient::new().map_err(|e| e.to_string())?;
+    let rows = pns_core::data::dataset::build_seasons(&client, &[season], 1)
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| StarterLog {
+            pitcher_id: r.pitcher_id as i32,
+            game_pk: r.game_pk as i64,
+            game_date: r.game_date,
+            home: r.home,
+            innings_pitched: r.innings_pitched,
+            earned_runs: r.earned_runs as f64,
+        })
+        .collect())
 }
 
 #[derive(Serialize)]
@@ -878,6 +917,48 @@ fn recent_info(recent: Option<RecentForm>, model_enabled: bool) -> Option<Recent
     })
 }
 
+#[tauri::command(rename = "run_backtest")]
+async fn run_backtest_cmd(
+    state: State<'_, AppState>,
+    season: Option<i32>,
+    include_pitchers: Option<bool>,
+    include_home_field: Option<bool>,
+    include_recent_form: Option<bool>,
+) -> Result<BacktestBundle, String> {
+    let season = season.unwrap_or_else(default_season);
+    let include_pitchers = include_pitchers.unwrap_or(false);
+    let include_home_field = include_home_field.unwrap_or(true);
+    let include_recent_form = include_recent_form.unwrap_or(true);
+    let key = (season, include_pitchers, include_home_field, include_recent_form);
+    {
+        let cache = state.cache.lock().unwrap();
+        if let Some(b) = cache.backtests.get(&key) {
+            return Ok(b.clone());
+        }
+    }
+    let games = state.get_games(season, false).await?;
+    let logs = if include_pitchers {
+        state.get_starter_logs(season).await?
+    } else {
+        Vec::new()
+    };
+    let bundle = tokio::task::spawn_blocking(move || {
+        run_backtest(
+            season,
+            &games,
+            &logs,
+            include_pitchers,
+            include_home_field,
+            include_recent_form,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut cache = state.cache.lock().unwrap();
+    cache.backtests.insert(key, bundle.clone());
+    Ok(bundle)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -891,6 +972,7 @@ pub fn run() {
             refresh_schedule,
             get_standings,
             get_division_race,
+            run_backtest_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

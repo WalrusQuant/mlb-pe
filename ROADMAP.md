@@ -12,10 +12,10 @@ Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered lo
 - ✅ **#8 Head-to-head history** — season series record + per-meeting list on the game detail page. Computed from the cached schedule (no API call).
 - ✅ **#9 Bullpen quality** — each team's season relief line (ERA / IP / WHIP / SV) on the game detail page, via the team relief split (`sitCodes=rp`), cached 1 h. The last-3-days *fatigue* refinement (per-pitcher game logs) is still TBD.
 - ✅ **Division race** — need vs supply for winning a division. Magic number (need) vs rest-of-season expected W-L from a Log5 walk of every remaining opponent, plus Monte Carlo P(win the division). Pitcher blend off; HFA and recent-form toggles match Predictions. Remaining schedule is inspectable. Learn page section 11.
+- ✅ **#3 Model performance** — Track tab: pull finished games, re-run the model, compare pick + predicted score to the box score. Right-winner %, runs MAE, calibration, monthly, every game. Toggles for pitcher / HFA / L20.
 
 ## Remaining
 
-- **#3 Model performance tracker**
 - **#4 Live scoreboard** — *next in suggested order.*
 - **#5b Park factors** — the run-multiplier half of the original #5.
 - **#6 Edge / value finder**
@@ -46,20 +46,11 @@ Not yet wired: clicking a team to jump to a per-team detail view. Could revisit 
 
 ---
 
-## 3. Model performance tracker
+## 3. Model performance ✅
 
-> Don't ask people to trust the model. Show them whether it's actually right.
+**Shipped.** Pull this season's finished games from the schedule. For each date, run the live model on stats known that morning (no same-day leak), then compare the pick and predicted runs to the box score. Track tab: right-winner %, Brier, log loss, runs MAE, calibration, monthly breakdown, every game. Toggles for pitcher / HFA / L20. Recomputed from the schedule cache — no SQLite, no live tracker.
 
-- Log every prediction to a small SQLite file on disk (date, matchup, predicted W%, predicted total, exponent used).
-- When a game finishes, join with actuals and store the result.
-- New nav tab: **Track Record**.
-  - Headline numbers: hit rate (favorite-wins), Brier score, log loss.
-  - Calibration plot: predicted W% bucket vs. actual win rate. (When we say 60%, do teams actually win 60%?)
-  - Run-total error histogram.
-  - Cumulative profit if you bet every fair-odds edge ≥ X%.
-
-**Impact:** large for credibility. Also catches model regressions early.
-**Effort:** medium. New SQLite layer + a backfill job for past predictions.
+Not in v1: sportsbook P/L, other seasons' picker.
 
 ---
 
@@ -134,7 +125,7 @@ Magic number is the standard `G + 1 − W − L_opp` (a head-to-head win is wort
 2. ✅ **Standings** — adds breadth, unblocks real W-L on Predictions cards.
 3. ✅ **Home-field advantage** — small but real model fix.
 4. ✅ **Recent form weighting** — captures hot/cold streaks the season aggregate smooths out.
-5. **Live scoreboard** — *next.* Connective tissue between predictions and reality; pairs with the Predictions cards we already have. Immediate visual payoff, no new persistence layer.
-6. **Model performance tracker** — proves the work is sound; valuable but has a cold-start problem (need weeks of logged predictions before the UI is interesting).
+5. ✅ **Model performance** — historical replay of finished games vs box scores.
+6. **Live scoreboard** — *next.* Connective tissue between predictions and reality; pairs with the Predictions table we already have.
 7. **Park factors** — small polish on the run-totals math; no API call needed.
 8. Everything else as appetite allows.
