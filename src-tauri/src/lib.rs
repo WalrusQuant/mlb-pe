@@ -3,6 +3,7 @@
 
 pub mod mlb_api;
 pub mod model;
+pub mod division_race;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -22,6 +23,7 @@ use model::{
     HeadToHead, MatchupBreakdown, PitcherAdj, PitcherInfo, Prediction, RecentForm, RecentInfo,
     TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
 };
+use division_race::{build_division_race, WlOverride, DEFAULT_N_SIMS, DEFAULT_SEED};
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 const PITCHER_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour — ERA changes slowly
@@ -596,6 +598,43 @@ async fn get_game_context(
     })
 }
 
+#[tauri::command]
+async fn get_division_race(
+    state: State<'_, AppState>,
+    season: Option<i32>,
+    division_id: Option<i32>,
+    include_home_field: Option<bool>,
+    include_recent_form: Option<bool>,
+    n_sims: Option<u32>,
+    seed: Option<u64>,
+    wl_overrides: Option<Vec<WlOverride>>,
+) -> Result<division_race::DivisionRaceBundle, String> {
+    let season = season.unwrap_or_else(default_season);
+    let division_id = division_id.unwrap_or(201); // AL East — first in the standings grid
+    let include_home_field = include_home_field.unwrap_or(true);
+    let include_recent_form = include_recent_form.unwrap_or(true);
+    let n_sims = n_sims.unwrap_or(DEFAULT_N_SIMS);
+    let seed = seed.unwrap_or(DEFAULT_SEED);
+    let overrides = wl_overrides.unwrap_or_default();
+
+    let games = state.get_games(season, false).await?;
+    let standings = state.get_standings(season, false).await?;
+    let exp = state.get_or_compute_optimal_exp(season, &games);
+
+    build_division_race(
+        season,
+        &games,
+        &standings,
+        division_id,
+        exp,
+        include_home_field,
+        include_recent_form,
+        n_sims,
+        seed,
+        &overrides,
+    )
+}
+
 fn default_season() -> i32 {
     Utc::now()
         .date_naive()
@@ -704,6 +743,7 @@ pub fn run() {
             get_optimal_exponent,
             refresh_schedule,
             get_standings,
+            get_division_race,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

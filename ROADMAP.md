@@ -11,6 +11,7 @@ Ideas for expanding mlb-pe beyond the current Pythagorean-only model. Ordered lo
 - ✅ **Game detail view** — click any matchup card → `/game/[gamePk]`. Tier 1: a step-by-step walkthrough of how the model reached that prediction (rate chain → per-team Pythagorean → log5 → home-field → runs → odds). Tier 2: the context sections below (#8, #9, plus home/road + L10 splits). `gamePk` now threaded through the schedule — also the correct doubleheader key.
 - ✅ **#8 Head-to-head history** — season series record + per-meeting list on the game detail page. Computed from the cached schedule (no API call).
 - ✅ **#9 Bullpen quality** — each team's season relief line (ERA / IP / WHIP / SV) on the game detail page, via the team relief split (`sitCodes=rp`), cached 1 h. The last-3-days *fatigue* refinement (per-pitcher game logs) is still TBD.
+- ✅ **Division race** — need vs supply for winning a division. Magic number (need) vs rest-of-season expected W-L from a Log5 walk of every remaining opponent, plus Monte Carlo P(win the division). Pitcher blend off; HFA and recent-form toggles match Predictions. Remaining schedule is inspectable. Learn page section 11.
 
 ## Remaining
 
@@ -116,6 +117,14 @@ A view that flags games where the model is most opinionated — and games where 
 **Shipped (season line).** Each team's aggregate relief pitching for the season — ERA / IP / WHIP / SV — on the game detail page, from the team relief split (`/teams/{id}/stats?stats=statSplits&sitCodes=rp`), cached 1 h.
 
 Still TBD: **last-3-days fatigue** (bullpen IP over the last few days). A gassed pen is a worse late-game bet than the season line suggests, but that needs per-pitcher game logs — tracked as **#9b** in Remaining.
+
+---
+
+## Division race ✅
+
+**Shipped.** A Race tab: pick a division (live standings W-L / RS / RA). Each row shows current W-L (editable what-if), RS/RA, Pythagorean W%, magic number vs the closest threat, games remaining, expected remaining W-L from a game-by-game Log5 walk (team Pythag + HFA, no pitcher blend), projected final W-L, and Monte Carlo P(finish 1st). Remaining games expand under the row.
+
+Magic number is the standard `G + 1 − W − L_opp` (a head-to-head win is worth 2). `G` is 162 or played+remaining when that isn't 162. When the season series is complete and this team leads it, the +1 drops. Incomplete series keep the standard formula; later MLB tiebreakers are not applied. Simulated ties that H2H cannot break are not counted as a unique division win.
 
 ---
 

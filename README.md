@@ -1,6 +1,6 @@
 # MLB Pythagorean Expectation
 
-A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill James' Pythagorean Expectation (augmented with a starting-pitcher adjustment, home-field advantage, and a recent-form L20 blend), shows you the league standings, surfaces model-flavored team stats, and teaches you how the math works.
+A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill James' Pythagorean Expectation (augmented with a starting-pitcher adjustment, home-field advantage, and a recent-form L20 blend), shows you the league standings, a division-race view (magic number vs rest-of-season Log5 supply), surfaces model-flavored team stats, and teaches you how the math works.
 
 ![Predictions screen — a card per matchup with win-prob bars, projected runs, fair odds, starting pitcher, and L20 form per side](./docs/predictions.png)
 
@@ -10,8 +10,9 @@ A desktop app — Rust + Tauri — that predicts MLB game outcomes using Bill Ja
 
 - **Predictions** — every game on a given date as a self-contained card: away/home team names with their real (W-L) record, win-probability bars (green favored / red underdog), projected runs, fair American odds, season rank, R/G and RA/G per team, the announced starting pitcher with his season ERA, and each team's L20 (last-20-games) scoring line.
 - **Standings** — six division tables (AL East / Central / West, NL East / Central / West) plus a wild-card race section per league. Each row shows W · L · PCT · GB · L10 · Streak · Run Diff. Division leaders get a star; teams currently in wild-card position are subtly tinted.
+- **Race** — pick a division and see each team's magic number to win it (need) against rest-of-season expected W-L from a Log5 walk of every remaining opponent, plus Monte Carlo P(win the division). W-L is editable for what-ifs; remaining schedule is inspectable per row.
 - **Stats** — model-flavored leaderboards you won't find on mlb.com: luck (actual W% vs Pythag W% — who's over- or under-performing their run differential), offense and defense rankings (OS / DS, league-relative), and hot/cold (biggest L20-vs-season net-runs swings). Every section makes an argument the raw box score doesn't.
-- **Learn** — an interactive walkthrough of the model: Pythagorean expectation, log5, OS/DS for predicted runs, fair-odds conversion, the pitcher adjustment, home-field advantage, and recent-form weighting. Each section has its own anchor in the left-side TOC.
+- **Learn** — an interactive walkthrough of the model: Pythagorean expectation, log5, OS/DS for predicted runs, fair-odds conversion, the pitcher adjustment, home-field advantage, and recent-form weighting, plus the division-race magic number and rest-of-season walk. Each section has its own anchor in the left-side TOC.
 - **Playground** — a sortable table of all 30 teams (Rank · W% · R/G · RA/G · OS · DS) on the left; pick a Home and Away with one click, then tweak runs, games, the Pythagorean exponent, an optional Starter ERA / IP, and optional L20 RS/G + RA/G overrides on the right. Three toggles let you flip the pitcher adjustment, home-field advantage, and recent-form blend on/off live. The win-prob, predicted runs, fair odds, and a sensitivity chart update instantly.
 - Data is pulled directly from the public [MLB Stats API](https://statsapi.mlb.com). Schedule and standings cached for 10 minutes, pitcher stats for 1 hour.
 
@@ -54,15 +55,17 @@ The app fetches the current season's schedule on first load — give it a few se
 
 ```
 src-tauri/src/
-├── mlb_api.rs     # statsapi.mlb.com client (schedule + people + standings endpoints)
-├── model.rs       # Pythagorean, log5, OS/DS, recent-form blend, pitcher blend,
-│                  # home-field shift, golden-section exponent fitter
-└── lib.rs         # Tauri commands + in-memory caches
+├── mlb_api.rs         # statsapi.mlb.com client (schedule + people + standings endpoints)
+├── model.rs           # Pythagorean, log5, OS/DS, recent-form blend, pitcher blend,
+│                      # home-field shift, golden-section exponent fitter
+├── division_race.rs   # magic number, rest-of-season Log5 walk, Monte Carlo P(win division)
+└── lib.rs             # Tauri commands + in-memory caches
 
 src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (cards)
 │   ├── standings/+page.svelte      # Division standings + wild-card race
+│   ├── race/+page.svelte           # Division race: magic number, ROS Log5 walk, Monte Carlo
 │   ├── stats/+page.svelte          # Luck / OS+DS / hot+cold leaderboards
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
 │   └── playground/+page.svelte     # Team table + matchup editor
@@ -85,12 +88,12 @@ cargo run --example smoke 2026 2026-05-23 # specific season + date
 This hits the real MLB API, runs the full prediction pipeline including pitcher fetch, home-field shift, and recent-form aggregation, and prints the resulting prediction table to stdout. Useful for catching regressions in the schedule normalizer, pitcher blend, recent-form, or HFA math before opening the GUI.
 
 ```bash
-cargo test --lib                        # unit tests (pythag, log5, odds, innings parsing, log-odds shift, recent-form blend)
+cargo test --lib                        # unit tests (pythag, log5, odds, innings parsing, log-odds shift, recent-form blend, magic number, ROS walk, seeded sim)
 ```
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for the broader feature list. Done so far: **pitcher adjustment**, **standings**, **home-field advantage**, **recent-form weighting**. Up next: live scoreboard, model performance tracker, park factors, and more.
+See [ROADMAP.md](./ROADMAP.md) for the broader feature list. Done so far: **pitcher adjustment**, **standings**, **home-field advantage**, **recent-form weighting**, **division race**. Up next: live scoreboard, model performance tracker, park factors, and more.
 
 ## Acknowledgments
 

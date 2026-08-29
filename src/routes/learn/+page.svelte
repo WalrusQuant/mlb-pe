@@ -12,6 +12,7 @@
     { id: "pitcher", label: "8 · The pitcher adjustment" },
     { id: "homefield", label: "9 · Home-field advantage" },
     { id: "recent", label: "10 · Recent form weighting" },
+    { id: "race", label: "11 · Magic number & ROS walk" },
   ];
 </script>
 
@@ -357,10 +358,64 @@
     </p>
   </section>
 
+  <section id="race">
+    <h2>11 · Magic number and the rest-of-season walk</h2>
+    <p>
+      The <a href="/race">Division Race</a> tab splits “who wins this division?” into
+      <em>need</em> and <em>supply</em>. Need is the magic number. Supply is what the remaining
+      schedule is expected to produce, given each team's Pythagorean talent.
+    </p>
+
+    <Formula label="Magic number vs a specific opponent">
+      <em>MN</em> = <em>G</em> + 1 − <em>W</em> − <em>L</em><sub>opp</sub>
+    </Formula>
+
+    <p>
+      <em>G</em> is 162, or the team's actual scheduled length (played + remaining) when that
+      isn't 162. Each of your remaining wins and each of the opponent's remaining losses
+      knocks one off the number. A head-to-head win is worth <strong>two</strong> — you gain a
+      win and they take a loss in the same game. The number we surface is vs the
+      <em>closest threat</em> (the opponent who still requires the most of those units).
+    </p>
+
+    <p>
+      If the season series between the two teams is already complete and you lead it, the
+      <span class="mono">+1</span> drops: a tie at the end of the year would go to you on the
+      first MLB tiebreaker, so you only need to not finish behind them. If they still play
+      each other, we keep the standard formula — the series isn't decided yet. Later
+      tiebreakers (intradivision record, and so on) are not applied.
+    </p>
+
+    <p>
+      Supply is a walk of every remaining game, including out-of-division and interleague
+      opponents. Talent is the same Pythagorean W% from RS/RA (and the same fitted exponent)
+      used everywhere else in the app. The pitcher blend is off — most remaining starters
+      aren't announced. Home-field and recent-form follow the toggles on the Race page.
+      Each remaining game's win probability is log5 over those two Pythagorean strengths
+      (plus the home-field shift when that toggle is on).
+    </p>
+
+    <Formula label="Expected remaining wins">
+      <em>E[remaining wins]</em> = Σ <em>P</em>(win game <em>i</em>)
+    </Formula>
+
+    <p>
+      That's the expected-value layer: a 0.62 game is 0.62 expected wins, not a coin flip
+      rounded to 1. Projected final W-L is current record plus that remainder.
+    </p>
+
+    <p>
+      The second layer is a Monte Carlo. Each remaining game is drawn as a Bernoulli from
+      its log5 <em>p</em>, thousands of full season paths. A path counts as a division win
+      only if that team uniquely finishes first, or (on a wins tie) uniquely leads the
+      season series among the tied group. A simulated tie that head-to-head cannot break
+      is not a unique division win — that's why the P(win) column may not sum to 100%.
+    </p>
+  </section>
+
   <section class="next">
     <p>
-      Want to feel how the math behaves? Head to the <a href="/playground">Playground</a> — drag the exponent,
-      edit the teams, watch the win % move.
+      Want to feel how the math behaves? Head to the <a href="/playground">Playground</a> — drag the exponent, edit the teams, watch the win % move. Or open the <a href="/race">Division Race</a> tab and walk a remaining schedule.
     </p>
   </section>
   </article>

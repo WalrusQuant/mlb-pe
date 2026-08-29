@@ -229,3 +229,55 @@ export type StandingsBundle = {
   lastUpdated: string;
   teams: TeamStanding[];
 };
+
+export type RemainingGame = {
+  gamePk: number;
+  date: string;
+  opponent: string;
+  opponentId: number;
+  home: boolean;
+  winProb: number;
+};
+
+export type WlOverride = {
+  teamId: number;
+  wins: number;
+  losses: number;
+};
+
+export type DivisionRaceRow = {
+  teamId: number;
+  teamName: string;
+  wins: number;
+  losses: number;
+  runsScored: number;
+  runsAllowed: number;
+  pythagWinPct: number;
+  magicNumber: number;
+  magicVs: string;
+  clinched: boolean;
+  eliminated: boolean;
+  gamesRemaining: number;
+  expectedRemainingWins: number;
+  expectedRemainingLosses: number;
+  projectedWins: number;
+  projectedLosses: number;
+  pWinDivision: number;
+  remaining: RemainingGame[];
+};
+
+export type DivisionRaceBundle = {
+  season: number;
+  divisionId: number;
+  divisionName: string;
+  lastUpdated: string;
+  exponent: number;
+  seasonGames: number;
+  nSims: number;
+  seed: number;
+  includeHomeField: boolean;
+  includeRecentForm: boolean;
+  pTie: number;
+  tiebreakerNote: string;
+  teams: DivisionRaceRow[];
+};
