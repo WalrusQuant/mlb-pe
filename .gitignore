@@ -16,3 +16,6 @@ dist/
 /crates/pns-core/target/
 __pycache__/
 *.pyc
+
+.secrets/
+*.p8
