@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { runBacktest } from "$lib/api";
   import type { BacktestBundle, BacktestGame } from "$lib/types";
-  import { fmtPct, fmtRuns, downloadCSV } from "$lib/format";
+  import { fmtPct, fmtOdds, fmtRuns, downloadCSV } from "$lib/format";
   import InfoTip from "$lib/components/InfoTip.svelte";
 
   let includePitchers = $state(true);
@@ -71,6 +71,11 @@
         actualAway: g.actualAwayRuns,
         actualHome: g.actualHomeRuns,
         totalError: totalError(g),
+        marketAwayMl: g.marketAwayMl,
+        marketHomeMl: g.marketHomeMl,
+        marketPHome: g.marketPHome,
+        units: g.units,
+        evBetHome: g.evBetHome,
       })),
     );
   }
@@ -85,6 +90,11 @@
 
   function maxCal(b: BacktestBundle): number {
     return Math.max(0.55, ...b.calibration.flatMap((c) => [c.predicted, c.actual]));
+  }
+
+  function fmtUnits(u: number): string {
+    const sign = u > 0 ? "+" : "";
+    return `${sign}${u.toFixed(1)}u`;
   }
 
   onMount(run);
@@ -208,8 +218,8 @@
       <span class="spinner" aria-hidden="true"></span>
       <p class="muted">
         {includePitchers
-          ? "Pulling starter logs, then scoring every finished game…"
-          : "Pulling the season schedule and scoring every finished game…"}
+          ? "Pulling starter logs and closing lines, then scoring every finished game…"
+          : "Pulling the season schedule and closing lines…"}
       </p>
     </div>
   {:else if bundle}
@@ -217,36 +227,49 @@
       <p class="muted scoring">Re-scoring with current toggles…</p>
     {/if}
 
-    <div class="headline">
-      <div class="stat featured">
+    <div class="kpis">
+      <div class="kpi">
         <span class="sv">{fmtPct(bundle.hitRate, 1)}</span>
         <span class="sl">Right winner</span>
-        <span class="sub mono">{hits} / {bundle.n}</span>
       </div>
-      <div class="stat featured">
+      <div class="kpi">
         <span class="sv">{bundle.totalRunsMae.toFixed(2)}</span>
-        <span class="sl">Score error (total runs MAE)</span>
-        <span class="sub mono">home {bundle.homeRunsMae.toFixed(2)} · away {bundle.awayRunsMae.toFixed(2)}</span>
+        <span class="sl">Runs MAE</span>
       </div>
-    </div>
-
-    <div class="stats">
-      <div class="stat"><span class="sv">{bundle.n}</span><span class="sl">Games scored</span></div>
-      <div class="stat">
-        <span class="sv">{bundle.skippedEarly}</span>
-        <span class="sl">
-          Skipped (&lt;10 prior games)
-          <InfoTip text="Either club had fewer than 10 completed games before that day. Opening week is skipped so the Pythagorean sample isn't junk. Official games almost never end tied; any called-game ties are counted separately." />
-        </span>
-      </div>
-      {#if bundle.skippedTied > 0}
-        <div class="stat"><span class="sv">{bundle.skippedTied}</span><span class="sl">Skipped (tied box score)</span></div>
+      {#if bundle.oddsN > 0}
+        <div class="kpi">
+          <span class="sv" class:good={bundle.units > 0} class:bad={bundle.units < 0}>{fmtUnits(bundle.units)}</span>
+          <span class="sl">+EV P/L</span>
+        </div>
+        <div class="kpi">
+          <span class="sv" class:good={bundle.roi > 0} class:bad={bundle.roi < 0}>{fmtPct(bundle.roi, 1)}</span>
+          <span class="sl">ROI · {bundle.unitsN} bets</span>
+        </div>
+        <div class="kpi">
+          <span class="sv">{bundle.oddsN - bundle.unitsN}</span>
+          <span class="sl">No bet</span>
+        </div>
       {/if}
-      <div class="stat"><span class="sv">{bundle.brier.toFixed(3)}</span><span class="sl">Brier (↓ better)</span></div>
-      <div class="stat"><span class="sv">{bundle.logLoss.toFixed(3)}</span><span class="sl">Log loss (↓)</span></div>
+      <div class="kpi">
+        <span class="sv">{bundle.n}</span>
+        <span class="sl">Scored</span>
+      </div>
+      <div class="kpi">
+        <span class="sv">{bundle.skippedEarly}</span>
+        <span class="sl">Skipped</span>
+      </div>
+      <div class="kpi">
+        <span class="sv">{bundle.brier.toFixed(3)}</span>
+        <span class="sl">Brier</span>
+      </div>
+      <div class="kpi">
+        <span class="sv">{bundle.logLoss.toFixed(3)}</span>
+        <span class="sl">Log loss</span>
+      </div>
     </div>
 
     <div class="stack">
+    <div class="charts">
     {#if bundle.calibration.length > 0}
       {@const mx = maxCal(bundle)}
       <div class="card">
@@ -263,7 +286,7 @@
             </div>
           {/each}
         </div>
-        <p class="muted small">Gray = model’s average favorite % in the bucket. Green = actual win rate.</p>
+        <p class="muted small">Gray = model. Green = actual.</p>
       </div>
     {/if}
 
@@ -290,6 +313,7 @@
         </table>
       </div>
     {/if}
+    </div>
 
     <div class="card games-card">
       <div class="games-head">
@@ -308,6 +332,8 @@
             <col class="c-team" />
             <col class="c-team" />
             <col class="c-num" />
+            <col class="c-num" />
+            <col class="c-num" />
             <col class="c-score" />
             <col class="c-score" />
             <col class="c-num" />
@@ -319,6 +345,8 @@
               <th>Pick</th>
               <th>Winner</th>
               <th>p(home)</th>
+              <th>Close</th>
+              <th>P/L</th>
               <th>Pred</th>
               <th>Final</th>
               <th>Runs miss</th>
@@ -335,6 +363,15 @@
                   {#if g.hit}<span class="ok"> hit</span>{:else}<span class="no"> miss</span>{/if}
                 </td>
                 <td class="mono num">{fmtPct(g.pHome, 1)}</td>
+                <td class="mono num">
+                  {#if g.marketPHome != null}
+                    {fmtPct(g.marketPHome, 1)}
+                    <span class="muted">{fmtOdds(g.marketHomeMl ?? 0)}</span>
+                  {:else}—{/if}
+                </td>
+                <td class="mono num" class:good={(g.units ?? 0) > 0} class:bad={(g.units ?? 0) < 0}>
+                  {g.units != null ? fmtUnits(g.units) : "—"}
+                </td>
                 <td class="mono num">{fmtRuns(g.predAwayRuns)}–{fmtRuns(g.predHomeRuns)}</td>
                 <td class="mono num">{g.actualAwayRuns}–{g.actualHomeRuns}</td>
                 <td class="mono num">{totalError(g).toFixed(1)}</td>
@@ -397,29 +434,48 @@
     border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .headline {
+  .kpis {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 10px;
-    margin: 16px 0 10px;
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+    gap: 8px;
+    margin: 12px 0 14px;
   }
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 10px;
-    margin: 0 0 16px;
+  .kpis:not(:has(.kpi:nth-child(9))) {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
-  .stat {
+  .kpi {
     background: var(--bg-elev);
     border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    min-width: 0;
   }
-  .featured { padding: 16px 18px; }
-  .sv { display: block; font-family: var(--mono); font-size: 1.25rem; font-weight: 600; }
-  .featured .sv { font-size: 1.7rem; }
-  .sl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-mute); }
-  .sub { display: block; margin-top: 4px; font-size: 0.82rem; color: var(--ink-soft); }
+  .sv { display: block; font-family: var(--mono); font-size: 1.05rem; font-weight: 600; line-height: 1.2; }
+  .sv.good { color: var(--good); }
+  .sv.bad { color: var(--bad); }
+  td.good { color: var(--good); }
+  td.bad { color: var(--bad); }
+  .sl {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-mute);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .charts {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: stretch;
+  }
+  @media (max-width: 1100px) {
+    .kpis, .kpis:not(:has(.kpi:nth-child(9))) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .charts { grid-template-columns: 1fr; }
+  }
   .stack { display: flex; flex-direction: column; gap: 12px; }
   .card h2 { font-size: 1.1rem; margin: 0 0 8px; }
   .cal {
@@ -442,7 +498,7 @@
     gap: 3px;
     align-items: flex-end;
     justify-content: center;
-    height: 160px;
+    height: 120px;
     width: 100%;
   }
   .bar {
@@ -472,14 +528,13 @@
   .games-card { padding-bottom: 12px; }
   .slate { overflow: auto; max-height: 70vh; }
   .months {
-    width: max-content;
-    max-width: 100%;
+    width: 100%;
     border-collapse: collapse;
     font-size: 0.86rem;
   }
   .months th, .months td {
     text-align: left;
-    padding: 6px 28px 6px 0;
+    padding: 6px 12px 6px 0;
     border-bottom: 1px solid var(--line-soft);
     white-space: nowrap;
   }

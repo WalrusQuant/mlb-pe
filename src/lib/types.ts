@@ -323,6 +323,12 @@ export type BacktestGame = {
   actualHomeRuns: number;
   actualAwayRuns: number;
   brier: number;
+  marketHomeMl: number | null;
+  marketAwayMl: number | null;
+  marketPHome: number | null;
+  marketTotal: number | null;
+  units: number | null;
+  evBetHome: boolean | null;
 };
 
 export type CalibBucket = {
@@ -361,6 +367,17 @@ export type BacktestBundle = {
   includeRateShrink: boolean;
   includeSplits: boolean;
   includeBullpen: boolean;
+  oddsN: number;
+  marketBrier: number;
+  marketHitRate: number;
+  disagreeN: number;
+  disagreeModelHit: number;
+  units: number;
+  unitsN: number;
+  roi: number;
+  fadeUnits: number;
+  fadeN: number;
+  fadeRoi: number;
   calibration: CalibBucket[];
   monthly: MonthRow[];
   games: BacktestGame[];

@@ -5,6 +5,7 @@ pub mod mlb_api;
 pub mod model;
 pub mod division_race;
 pub mod backtest;
+pub mod odds;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -49,6 +50,7 @@ struct Cache {
     next_starts: HashMap<String, (HashMap<i32, NextStartCard>, Instant)>,
     starter_logs: Option<(i32, Vec<StarterLog>, Instant)>,
     backtests: HashMap<(i32, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool), BacktestBundle>,
+    sao: HashMap<String, Vec<odds::ClosingLine>>,
 }
 
 impl AppState {
@@ -260,6 +262,50 @@ impl AppState {
         let mut cache = self.cache.lock().unwrap();
         cache.starter_logs = Some((season, logs.clone(), Instant::now()));
         Ok(logs)
+    }
+
+    async fn get_closing_lines(&self, dates: &[String]) -> Vec<odds::ClosingLine> {
+        let mut out = Vec::new();
+        let mut missing = Vec::new();
+        {
+            let cache = self.cache.lock().unwrap();
+            for d in dates {
+                if let Some(v) = cache.sao.get(d) {
+                    out.extend(v.iter().cloned());
+                } else {
+                    missing.push(d.clone());
+                }
+            }
+        }
+        if missing.is_empty() {
+            return out;
+        }
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
+        let mut handles = Vec::new();
+        for d in missing {
+            let sem = sem.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.ok();
+                let res = odds::fetch_date(&d).await;
+                (d, res)
+            }));
+        }
+        let mut fetched = Vec::new();
+        for h in handles {
+            match h.await {
+                Ok((d, Ok(v))) => fetched.push((d, v)),
+                Ok((d, Err(e))) => eprintln!("[mlb-pe] scoresandodds {d}: {e}"),
+                Err(e) => eprintln!("[mlb-pe] scoresandodds join: {e}"),
+            }
+        }
+        {
+            let mut cache = self.cache.lock().unwrap();
+            for (d, v) in &fetched {
+                cache.sao.insert(d.clone(), v.clone());
+                out.extend(v.iter().cloned());
+            }
+        }
+        out
     }
 }
 
@@ -970,11 +1016,25 @@ async fn run_backtest_cmd(
         }
     }
     let games = state.get_games(season, false).await?;
-    let logs = if include_pitchers || include_bullpen {
-        state.get_starter_logs(season).await?
-    } else {
-        Vec::new()
+    let dates: Vec<String> = {
+        let mut s = std::collections::BTreeSet::new();
+        for g in &games {
+            if g.is_final() {
+                s.insert(g.date.clone());
+            }
+        }
+        s.into_iter().collect()
     };
+    let logs_fut = async {
+        if include_pitchers || include_bullpen {
+            state.get_starter_logs(season).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let lines_fut = state.get_closing_lines(&dates);
+    let (logs, lines) = tokio::join!(logs_fut, lines_fut);
+    let logs = logs?;
     let bundle = tokio::task::spawn_blocking(move || {
         run_backtest(
             season,
@@ -990,6 +1050,7 @@ async fn run_backtest_cmd(
             include_rate_shrink,
             include_splits,
             include_bullpen,
+            &lines,
         )
     })
     .await

@@ -31,6 +31,12 @@ pub struct BacktestGame {
     pub actual_home_runs: i32,
     pub actual_away_runs: i32,
     pub brier: f64,
+    pub market_home_ml: Option<i32>,
+    pub market_away_ml: Option<i32>,
+    pub market_p_home: Option<f64>,
+    pub market_total: Option<f64>,
+    pub units: Option<f64>,
+    pub ev_bet_home: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +81,17 @@ pub struct BacktestBundle {
     pub include_rate_shrink: bool,
     pub include_splits: bool,
     pub include_bullpen: bool,
+    pub odds_n: u32,
+    pub market_brier: f64,
+    pub market_hit_rate: f64,
+    pub disagree_n: u32,
+    pub disagree_model_hit: f64,
+    pub units: f64,
+    pub units_n: u32,
+    pub roi: f64,
+    pub fade_units: f64,
+    pub fade_n: u32,
+    pub fade_roi: f64,
     pub calibration: Vec<CalibBucket>,
     pub monthly: Vec<MonthRow>,
     pub games: Vec<BacktestGame>,
@@ -104,6 +121,7 @@ pub fn run_backtest(
     include_rate_shrink: bool,
     include_splits: bool,
     include_bullpen: bool,
+    lines: &[crate::odds::ClosingLine],
 ) -> BacktestBundle {
     let games = crate::mlb_api::dedupe_by_game_pk(games.to_vec());
     let games = &games;
@@ -252,6 +270,35 @@ pub fn run_backtest(
             let picked_home = p >= 0.5;
             let y = if home_won { 1.0 } else { 0.0 };
             let brier = (p - y).powi(2);
+            let line = match_line(lines, &g.date, &g.away_team_name, &g.home_team_name, ar, hr);
+            let (market_home_ml, market_away_ml, market_p_home, market_total, units, ev_bet_home) =
+                match line {
+                    Some(l) => {
+                        let mp = match (l.home_ml, l.away_ml) {
+                            (Some(h), Some(a)) => {
+                                Some(round_to(crate::odds::vig_free_home(h, a), 4))
+                            }
+                            _ => None,
+                        };
+                        let ev_bet = match (l.home_ml, l.away_ml) {
+                            (Some(h), Some(a)) => crate::odds::plus_ev_bet(p, h, a),
+                            _ => None,
+                        };
+                        let (units, ev_bet_home) = match ev_bet {
+                            Some((bet_home, _)) => {
+                                let o = if bet_home { l.home_ml } else { l.away_ml };
+                                let won = bet_home == home_won;
+                                (
+                                    o.map(|odds| round_to(crate::odds::unit_pl(odds, won), 4)),
+                                    Some(bet_home),
+                                )
+                            }
+                            None => (None, None),
+                        };
+                        (l.home_ml, l.away_ml, mp, l.total, units, ev_bet_home)
+                    }
+                    None => (None, None, None, None, None, None),
+                };
 
             rows.push(BacktestGame {
                 game_pk: g.game_pk,
@@ -267,6 +314,12 @@ pub fn run_backtest(
                 actual_home_runs: hr,
                 actual_away_runs: ar,
                 brier: round_to(brier, 4),
+                market_home_ml,
+                market_away_ml,
+                market_p_home,
+                market_total,
+                units,
+                ev_bet_home,
             });
         }
 
@@ -289,6 +342,32 @@ pub fn run_backtest(
         skipped_tied,
         rows,
     )
+}
+
+fn match_line<'a>(
+    lines: &'a [crate::odds::ClosingLine],
+    date: &str,
+    away: &str,
+    home: &str,
+    ar: i32,
+    hr: i32,
+) -> Option<&'a crate::odds::ClosingLine> {
+    let a = crate::odds::mlb_nick(away);
+    let h = crate::odds::mlb_nick(home);
+    let cands: Vec<_> = lines
+        .iter()
+        .filter(|l| {
+            l.date == date
+                && l.away.eq_ignore_ascii_case(a)
+                && l.home.eq_ignore_ascii_case(h)
+        })
+        .collect();
+    if cands.len() == 1 {
+        return Some(cands[0]);
+    }
+    cands
+        .into_iter()
+        .find(|l| l.away_score == Some(ar) && l.home_score == Some(hr))
 }
 
 fn compute_bullpen_rates(prior: &[Game], logs: &[StarterLog]) -> HashMap<i32, f64> {
@@ -417,6 +496,7 @@ fn summarize(
 
     let calibration = calibration(&rows);
     let monthly = monthly(&rows);
+    let mkt = market_stats(&rows);
     rows.sort_by(|a, b| b.date.cmp(&a.date).then(a.game_pk.cmp(&b.game_pk)));
 
     BacktestBundle {
@@ -440,9 +520,107 @@ fn summarize(
         include_rate_shrink,
         include_splits,
         include_bullpen,
+        odds_n: mkt.odds_n,
+        market_brier: mkt.market_brier,
+        market_hit_rate: mkt.market_hit_rate,
+        disagree_n: mkt.disagree_n,
+        disagree_model_hit: mkt.disagree_model_hit,
+        units: mkt.units,
+        units_n: mkt.units_n,
+        roi: mkt.roi,
+        fade_units: mkt.fade_units,
+        fade_n: mkt.fade_n,
+        fade_roi: mkt.fade_roi,
         calibration,
         monthly,
         games: rows,
+    }
+}
+
+struct MarketStats {
+    odds_n: u32,
+    market_brier: f64,
+    market_hit_rate: f64,
+    disagree_n: u32,
+    disagree_model_hit: f64,
+    units: f64,
+    units_n: u32,
+    roi: f64,
+    fade_units: f64,
+    fade_n: u32,
+    fade_roi: f64,
+}
+
+fn market_stats(rows: &[BacktestGame]) -> MarketStats {
+    let z = MarketStats {
+        odds_n: 0,
+        market_brier: 0.0,
+        market_hit_rate: 0.0,
+        disagree_n: 0,
+        disagree_model_hit: 0.0,
+        units: 0.0,
+        units_n: 0,
+        roi: 0.0,
+        fade_units: 0.0,
+        fade_n: 0,
+        fade_roi: 0.0,
+    };
+    let with: Vec<_> = rows.iter().filter(|r| r.market_p_home.is_some()).collect();
+    let n = with.len() as f64;
+    if n == 0.0 {
+        return z;
+    }
+    let mut mb = 0.0;
+    let mut mhit = 0.0;
+    let mut dis = 0.0;
+    let mut dis_hit = 0.0;
+    let mut units = 0.0;
+    let mut units_n = 0u32;
+    let mut fade_units = 0.0;
+    let mut fade_n = 0u32;
+    for r in &with {
+        let mp = r.market_p_home.unwrap();
+        let y = if r.home_won { 1.0 } else { 0.0 };
+        mb += (mp - y).powi(2);
+        let mkt_home = mp >= 0.5;
+        if mkt_home == r.home_won {
+            mhit += 1.0;
+        }
+        if let Some(u) = r.units {
+            units += u;
+            units_n += 1;
+            if let Some(bet_home) = r.ev_bet_home {
+                if bet_home != mkt_home {
+                    dis += 1.0;
+                    fade_units += u;
+                    fade_n += 1;
+                    if bet_home == r.home_won {
+                        dis_hit += 1.0;
+                    }
+                }
+            }
+        }
+    }
+    MarketStats {
+        odds_n: with.len() as u32,
+        market_brier: round_to(mb / n, 4),
+        market_hit_rate: round_to(mhit / n, 4),
+        disagree_n: dis as u32,
+        disagree_model_hit: if dis > 0.0 { round_to(dis_hit / dis, 4) } else { 0.0 },
+        units: round_to(units, 2),
+        units_n,
+        roi: if units_n > 0 {
+            round_to(units / units_n as f64, 4)
+        } else {
+            0.0
+        },
+        fade_units: round_to(fade_units, 2),
+        fade_n,
+        fade_roi: if fade_n > 0 {
+            round_to(fade_units / fade_n as f64, 4)
+        } else {
+            0.0
+        },
     }
 }
 
@@ -555,7 +733,7 @@ mod tests {
         // Day 2: A is still a juggernaut if we leak day-2... we add a B-home blowout
         // that would tank A's Pythagorean if leaked into priors.
         games.push(fin(100, "2026-04-02", 2, "B", 20, 1, "A", 0));
-        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
+        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
         assert_eq!(bundle.n, 1, "only the day-2 game is scorable");
         // Priors: A scored 100, allowed 10 over 10 games. Strong favorite at home.
         assert!(bundle.games[0].p_home < 0.5, "A is away on day 2; B should be favored from day-1 priors, p_home={}", bundle.games[0].p_home);
@@ -565,7 +743,7 @@ mod tests {
     fn favorite_hit_and_run_error() {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 8, 2, 10);
         games.push(fin(50, "2026-04-02", 1, "A", 7, 2, "B", 1));
-        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
+        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
         assert_eq!(bundle.n, 1);
         assert_eq!(bundle.skipped_early, 10);
         assert_eq!(bundle.skipped_tied, 0);
@@ -606,7 +784,7 @@ mod tests {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 8, 2, 10);
         games.push(fin(824912, "2026-06-16", 1, "A", 2, 2, "B", 7));
         games.push(fin(824912, "2026-06-16", 1, "A", 2, 2, "B", 7));
-        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
+        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
         assert_eq!(bundle.n, 1);
         assert_eq!(bundle.games.iter().filter(|g| g.game_pk == 824912).count(), 1);
     }
@@ -615,7 +793,7 @@ mod tests {
     fn tied_box_score_is_not_a_pick() {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 8, 2, 10);
         games.push(fin(50, "2026-04-02", 1, "A", 3, 2, "B", 3));
-        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
+        let bundle = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
         assert_eq!(bundle.n, 0);
         assert_eq!(bundle.skipped_tied, 1);
         assert_eq!(bundle.skipped_early, 10);
@@ -626,8 +804,8 @@ mod tests {
         let mut games = series(1, "2026-04-01", 1, "MIL", 2, "OPP", 5, 4, 10);
         games.push(fin(50, "2026-04-02", 1, "MIL", 22, 2, "OPP", 0));
         games.push(fin(51, "2026-04-03", 1, "MIL", 6, 2, "OPP", 3));
-        let pooled = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
-        let vote = run_backtest(2026, &games, &[], false, false, false, true, false, false, false, false, false, false);
+        let pooled = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
+        let vote = run_backtest(2026, &games, &[], false, false, false, true, false, false, false, false, false, false, &[]);
         assert_eq!(pooled.n, vote.n);
         let p_pool = pooled.games.iter().find(|g| g.game_pk == 51).unwrap().p_home;
         let p_vote = vote.games.iter().find(|g| g.game_pk == 51).unwrap().p_home;
@@ -638,8 +816,8 @@ mod tests {
     fn poisson_win_is_softer_than_log5() {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 5, 4, 10);
         games.push(fin(50, "2026-04-02", 1, "A", 5, 2, "B", 4));
-        let log5 = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
-        let pois = run_backtest(2026, &games, &[], false, false, false, false, true, false, false, false, false, false);
+        let log5 = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
+        let pois = run_backtest(2026, &games, &[], false, false, false, false, true, false, false, false, false, false, &[]);
         let p_log = log5.games[0].p_home;
         let p_poi = pois.games[0].p_home;
         assert_eq!(log5.n, 1);
@@ -654,8 +832,8 @@ mod tests {
     fn nb_win_is_softer_than_poisson() {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 5, 4, 10);
         games.push(fin(50, "2026-04-02", 1, "A", 5, 2, "B", 4));
-        let pois = run_backtest(2026, &games, &[], false, false, false, false, true, false, false, false, false, false);
-        let nb = run_backtest(2026, &games, &[], false, false, false, false, false, true, false, false, false, false);
+        let pois = run_backtest(2026, &games, &[], false, false, false, false, true, false, false, false, false, false, &[]);
+        let nb = run_backtest(2026, &games, &[], false, false, false, false, false, true, false, false, false, false, &[]);
         let p_poi = pois.games[0].p_home;
         let p_nb = nb.games[0].p_home;
         assert!((nb.games[0].pred_home_runs - pois.games[0].pred_home_runs).abs() < 1e-9);
@@ -671,8 +849,8 @@ mod tests {
         let mut g = fin(50, "2026-04-02", 1, "A", 5, 2, "B", 4);
         g.venue_id = Some(19); // Coors 1.25
         games.push(g);
-        let off = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
-        let on = run_backtest(2026, &games, &[], false, false, false, false, false, false, true, false, false, false);
+        let off = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
+        let on = run_backtest(2026, &games, &[], false, false, false, false, false, false, true, false, false, false, &[]);
         let p_off = off.games.iter().find(|r| r.game_pk == 50).unwrap();
         let p_on = on.games.iter().find(|r| r.game_pk == 50).unwrap();
         let tot_off = p_off.pred_home_runs + p_off.pred_away_runs;
@@ -684,8 +862,8 @@ mod tests {
     fn rate_shrink_pulls_predicted_runs_toward_league() {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 8, 2, 10);
         games.push(fin(50, "2026-04-02", 1, "A", 7, 2, "B", 3));
-        let off = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
-        let on = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, true, false, false);
+        let off = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
+        let on = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, true, false, false, &[]);
         let p_off = off.games.iter().find(|r| r.game_pk == 50).unwrap();
         let p_on = on.games.iter().find(|r| r.game_pk == 50).unwrap();
         assert!(
@@ -702,8 +880,8 @@ mod tests {
         let mut games = series(1, "2026-04-01", 1, "A", 2, "B", 8, 2, 10);
         games.extend(series(20, "2026-04-02", 2, "B", 1, "A", 8, 2, 10));
         games.push(fin(50, "2026-04-03", 1, "A", 6, 2, "B", 3));
-        let off = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false);
-        let on = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, true, false);
+        let off = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, false, false, &[]);
+        let on = run_backtest(2026, &games, &[], false, false, false, false, false, false, false, false, true, false, &[]);
         let p_off = off.games.iter().find(|r| r.game_pk == 50).unwrap();
         let p_on = on.games.iter().find(|r| r.game_pk == 50).unwrap();
         assert!(
@@ -735,8 +913,8 @@ mod tests {
         }
         logs.push(slog(50, true, d2, 100, 6.0, 2.0));
         logs.push(slog(50, false, d2, 200, 6.0, 2.0));
-        let off = run_backtest(2026, &games, &logs, true, false, false, false, false, false, false, false, false, false);
-        let on = run_backtest(2026, &games, &logs, true, false, false, false, false, false, false, false, false, true);
+        let off = run_backtest(2026, &games, &logs, true, false, false, false, false, false, false, false, false, false, &[]);
+        let on = run_backtest(2026, &games, &logs, true, false, false, false, false, false, false, false, false, true, &[]);
         let p_off = off.games.iter().find(|r| r.game_pk == 50).unwrap();
         let p_on = on.games.iter().find(|r| r.game_pk == 50).unwrap();
         assert!(
