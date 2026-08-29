@@ -354,6 +354,13 @@ export type BacktestBundle = {
   includePitchers: boolean;
   includeHomeField: boolean;
   includeRecentForm: boolean;
+  includeGameVote: boolean;
+  includePoissonWin: boolean;
+  includeNbWin: boolean;
+  includeParkFactors: boolean;
+  includeRateShrink: boolean;
+  includeSplits: boolean;
+  includeBullpen: boolean;
   calibration: CalibBucket[];
   monthly: MonthRow[];
   games: BacktestGame[];

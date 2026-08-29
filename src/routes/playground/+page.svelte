@@ -50,6 +50,9 @@
   const HOME_FIELD_LOG_ODDS = 0.1603;
   const RECENT_FORM_WEIGHT = 0.4;
   const MIN_RECENT_GAMES = 10;
+  const NB_SIZE = 2.0;
+  const RUN_LINE_SHRINK = 0.4;
+  const RATE_SHRINK = 0.4;
 
   function shiftLogOdds(p: number, delta: number): number {
     const clamped = Math.max(1e-9, Math.min(1 - 1e-9, p));
@@ -104,6 +107,41 @@
     const denom = num + (1 - pA) * pB;
     return denom === 0 ? 0.5 : num / denom;
   }
+  function shrinkRunLine(pred: number, lg: number): number {
+    return (1 - RUN_LINE_SHRINK) * pred + RUN_LINE_SHRINK * lg;
+  }
+  function shrinkToOne(x: number): number {
+    return (1 - RATE_SHRINK) * x + RATE_SHRINK;
+  }
+  function nbPmf(mu: number, r: number, maxK: number): number[] {
+    const p = new Array(maxK + 1).fill(0);
+    p[0] = Math.pow(r / (r + mu), r);
+    const t = mu / (r + mu);
+    for (let k = 0; k < maxK; k++) {
+      p[k + 1] = (p[k] * (k + r) * t) / (k + 1);
+    }
+    return p;
+  }
+  function scoreHomeWin(ph: number[], pa: number[]): number {
+    let pHome = 0;
+    let pAway = 0;
+    for (let i = 0; i < ph.length; i++) {
+      for (let j = 0; j < pa.length; j++) {
+        const p = ph[i] * pa[j];
+        if (i > j) pHome += p;
+        else if (j > i) pAway += p;
+      }
+    }
+    const d = pHome + pAway;
+    return d <= 0 ? 0.5 : pHome / d;
+  }
+  function nbHomeWin(muH: number, muA: number): number {
+    const maxK = 50;
+    return scoreHomeWin(
+      nbPmf(Math.max(0, muH), NB_SIZE, maxK),
+      nbPmf(Math.max(0, muA), NB_SIZE, maxK),
+    );
+  }
   function americanOdds(p: number): number {
     if (p <= 0 || p >= 1) return 0;
     return p > 0.5
@@ -131,21 +169,22 @@
   let result = $derived.by(() => {
     const { homeRSG, awayRSG, homeRAEff, awayRAEff } = rates;
 
-    // Pythag uses per-game rates; the exponent is the same as game-totals form (scale-invariant).
+    const osH = shrinkToOne(homeRSG / leagueAvgRuns);
+    const dsH = shrinkToOne(homeRAEff / leagueAvgRuns);
+    const osA = shrinkToOne(awayRSG / leagueAvgRuns);
+    const dsA = shrinkToOne(awayRAEff / leagueAvgRuns);
+    const eHome = osH * dsA * leagueAvgRuns;
+    const eAway = osA * dsH * leagueAvgRuns;
     const pHome = pythag(homeRSG, homeRAEff, exponent);
     const pAway = pythag(awayRSG, awayRAEff, exponent);
-    const neutralHomeWin = log5(pHome, pAway);
+    const neutralHomeWin = nbHomeWin(
+      shrinkRunLine(eHome, leagueAvgRuns),
+      shrinkRunLine(eAway, leagueAvgRuns),
+    );
     const homeWin = applyHomeField
       ? shiftLogOdds(neutralHomeWin, HOME_FIELD_LOG_ODDS)
       : neutralHomeWin;
     const awayWin = 1 - homeWin;
-
-    const osH = homeRSG / leagueAvgRuns;
-    const dsH = homeRAEff / leagueAvgRuns;
-    const osA = awayRSG / leagueAvgRuns;
-    const dsA = awayRAEff / leagueAvgRuns;
-    const eHome = osH * dsA * leagueAvgRuns;
-    const eAway = osA * dsH * leagueAvgRuns;
     return {
       pHome, pAway, homeWin, awayWin,
       homeFairOdds: americanOdds(homeWin),
@@ -727,10 +766,10 @@
 
         <!-- Sensitivity chart -->
         <div class="card chart-card">
-          <h3>Sensitivity: home win % vs. exponent</h3>
+          <h3>Sensitivity: Pythagorean home win % vs. exponent</h3>
           <p class="subtle small">
-            How much does the prediction shift as we vary the exponent across [0.5, 4.0]?
-            The vertical line is your current value.
+            Live win % is Overdisp (from the predicted score), so it does not use the exponent.
+            This chart is the old Pythagorean + log5 curve.
           </p>
           <svg
             viewBox={`0 0 ${CW} ${CH}`}

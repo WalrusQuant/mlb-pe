@@ -5,9 +5,11 @@
   import { fmtPct, fmtRuns, downloadCSV } from "$lib/format";
   import InfoTip from "$lib/components/InfoTip.svelte";
 
-  let includePitchers = $state(false);
+  let includePitchers = $state(true);
   let includeHomeField = $state(true);
   let includeRecentForm = $state(true);
+  let includeNbWin = $state(true);
+  let includeRateShrink = $state(true);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let bundle = $state<BacktestBundle | null>(null);
@@ -21,6 +23,13 @@
         includePitchers,
         includeHomeField,
         includeRecentForm,
+        includeGameVote: false,
+        includePoissonWin: false,
+        includeNbWin,
+        includeParkFactors: false,
+        includeRateShrink,
+        includeSplits: false,
+        includeBullpen: false,
       });
     } catch (e) {
       error = String(e);
@@ -30,10 +39,12 @@
     }
   }
 
-  function flip(which: "p" | "h" | "r") {
+  function flip(which: "p" | "h" | "r" | "n" | "o") {
     if (which === "p") includePitchers = !includePitchers;
     if (which === "h") includeHomeField = !includeHomeField;
     if (which === "r") includeRecentForm = !includeRecentForm;
+    if (which === "n") includeNbWin = !includeNbWin;
+    if (which === "o") includeRateShrink = !includeRateShrink;
     if (!loading) run();
   }
 
@@ -83,8 +94,7 @@
   <header class="hero">
     <h1>How the model did</h1>
     <p class="subtle">
-      Pull every finished game this season. Run the same model as Predictions. Compare
-      the pick and the predicted score to the box score. Toggles re-run it.
+      Same model as Predictions. Flip a wired switch to A/B against that.
     </p>
   </header>
 
@@ -134,6 +144,44 @@
         aria-label="Recent form"
         disabled={loading}
         onclick={() => flip("r")}
+      >
+        <span class="thumb"></span>
+        <span class="track-label on-label">On</span>
+        <span class="track-label off-label">Off</span>
+      </button>
+    </label>
+    <label class="pitcher-toggle">
+      <span class="lbl">
+        Overdisp
+        <InfoTip text="Win % from the predicted score (negative binomial, size 2, 40% shrink toward league average). On in live Predictions." />
+      </span>
+      <button
+        class="toggle"
+        class:on={includeNbWin}
+        role="switch"
+        aria-checked={includeNbWin}
+        aria-label="Overdispersed"
+        disabled={loading}
+        onclick={() => flip("n")}
+      >
+        <span class="thumb"></span>
+        <span class="track-label on-label">On</span>
+        <span class="track-label off-label">Off</span>
+      </button>
+    </label>
+    <label class="pitcher-toggle">
+      <span class="lbl">
+        Shrink OS/DS
+        <InfoTip text="Pulls OS and DS 40% toward 1.0 before OS×DS×lg. On in live Predictions." />
+      </span>
+      <button
+        class="toggle"
+        class:on={includeRateShrink}
+        role="switch"
+        aria-checked={includeRateShrink}
+        aria-label="Shrink OS/DS"
+        disabled={loading}
+        onclick={() => flip("o")}
       >
         <span class="thumb"></span>
         <span class="track-label on-label">On</span>

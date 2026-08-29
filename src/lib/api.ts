@@ -75,6 +75,13 @@ export async function runBacktest(opts: {
   includePitchers?: boolean;
   includeHomeField?: boolean;
   includeRecentForm?: boolean;
+  includeGameVote?: boolean;
+  includePoissonWin?: boolean;
+  includeNbWin?: boolean;
+  includeParkFactors?: boolean;
+  includeRateShrink?: boolean;
+  includeSplits?: boolean;
+  includeBullpen?: boolean;
 } = {}): Promise<BacktestBundle> {
   return await invoke<BacktestBundle>("run_backtest", opts);
 }

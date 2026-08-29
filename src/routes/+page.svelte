@@ -176,8 +176,6 @@
     }
   }
 
-  // Link to the game-detail route, carrying the current date + toggle + exponent
-  // state in the query string so the breakdown matches this card exactly.
   function gameHref(gamePk: number): string {
     const params = new URLSearchParams({
       date,
@@ -206,8 +204,9 @@
     <div>
       <h1>Today's MLB Predictions</h1>
       <p class="subtle">
-        Each game's win probability and predicted runs, derived from team-level Pythagorean
-        expectation and log5. The exponent is fit to this season's actual results.
+        Pythagorean W% = RS<sup>x</sup> / (RS<sup>x</sup> + RA<sup>x</sup>), with x fit
+        to this season. Predicted runs from OS × DS (rates shrunk 40% toward average).
+        Win % from that score (Overdisp), then home field.
       </p>
     </div>
   </header>
@@ -220,7 +219,7 @@
     <label class="exp">
       <span class="lbl">
         Exponent
-        <InfoTip text="The power in W% = RS^x / (RS^x + RA^x). Default is optimized to minimize MSE against this season's actual win %." />
+        <InfoTip text="The power in W% = RS^x / (RS^x + RA^x). Default is optimized to minimize MSE against this season's actual win %. Used for Pythagorean ranks and for win % when Overdisp is off." />
       </span>
       <div class="exprow">
         <select

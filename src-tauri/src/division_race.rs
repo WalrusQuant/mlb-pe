@@ -518,6 +518,7 @@ mod tests {
             away_pitcher_id: None,
             away_pitcher_name: None,
             game_date_time: None,
+            venue_id: None,
         }
     }
 
@@ -538,6 +539,7 @@ mod tests {
             away_pitcher_id: None,
             away_pitcher_name: None,
             game_date_time: None,
+            venue_id: None,
         }
     }
 

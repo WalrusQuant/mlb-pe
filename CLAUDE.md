@@ -51,12 +51,12 @@ For each matchup:
    `0.6 · starter_ERA + 0.4 · team_RA/G` when season IP ≥ 20; else team RA/G.
    Recopy `crates/pns-core` + `models/pns-model-v1.json` when the PNS artifact retrains.
    Score via `tokio::task::spawn_blocking` — pns-core is blocking reqwest.
-4. Matchup win prob via log5 over the per-team Pythag computed from the blended rates.
-5. **Home-field advantage** (when toggle is on): shift home win in *log-odds space* by `HOME_FIELD_LOG_ODDS = 0.1603` (= logit(0.54) − logit(0.50)). This bumps a 50/50 game to ~54% but shrinks at the extremes (a 90% favorite gains < 2 pts). Helper: `shift_log_odds(p, delta)` in `model.rs`.
-6. Predicted runs = OS_eff × DS_eff × league-avg (HFA does NOT affect run totals). OS_eff uses the L20-blended RS/G.
+4. Predicted runs = OS_eff × DS_eff × league-avg (HFA does NOT affect run totals). OS_eff uses the L20-blended RS/G, then OS and DS are pulled 40% toward 1.0 (`RATE_SHRINK`).
+5. **Win probability from the run line** (live Predictions): shrink each side 40% toward league average, then P(home scores more | not tied) under a negative binomial (size 2). Replaces Pythagorean + log5. Track can turn Overdisp off to compare against log5.
+6. **Home-field advantage** (when toggle is on): shift home win in *log-odds space* by `HOME_FIELD_LOG_ODDS = 0.1603` (= logit(0.54) − logit(0.50)). This bumps a 50/50 game to ~54% but shrinks at the extremes (a 90% favorite gains < 2 pts). Helper: `shift_log_odds(p, delta)` in `model.rs`.
 7. Fair American odds from the home-field-adjusted win prob.
 
-Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`, `HOME_FIELD_LOG_ODDS = 0.1603`, `RECENT_FORM_WINDOW = 20`, `RECENT_FORM_WEIGHT = 0.4`, `MIN_RECENT_GAMES = 10`.
+Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`, `HOME_FIELD_LOG_ODDS = 0.1603`, `RECENT_FORM_WINDOW = 20`, `RECENT_FORM_WEIGHT = 0.4`, `MIN_RECENT_GAMES = 10`, `NB_SIZE = 2.0`, `RUN_LINE_SHRINK = 0.4`, `RATE_SHRINK = 0.4`.
 
 All three toggles live on the Predictions page (apply server-side via `get_predictions` params `includePitchers` / `includeHomeField` / `includeRecentForm`) AND on the Playground page (apply client-side via mirrored JS math — keep the Rust and JS implementations in sync).
 
@@ -86,7 +86,7 @@ All three toggles live on the Predictions page (apply server-side via `get_predi
 
 8. **JS / Rust model drift risk.** The Playground mirrors the model in JS for instant slider feedback. When you change a constant or formula in `model.rs`, you MUST also update `src/routes/playground/+page.svelte`. Search for the constant name in both files.
 
-9. **Track vs live Predictions.** Track replays a finished game using only `date < D` (no same-day leak). Live `get_predictions` uses the full season-to-date cache, including games already final today. Do not "fix" Track by feeding it current season totals.
+9. **Track vs live Predictions.** Track replays a finished game using only `date < D` (no same-day leak). Live `get_predictions` uses the full season-to-date cache, including games already final today. Do not "fix" Track by feeding it current season totals. Live win % is Overdisp (NB size 2 + 40% run-line shrink). Track only shows toggles for wired factors.
 
 ## Commands
 

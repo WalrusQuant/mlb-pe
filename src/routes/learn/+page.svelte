@@ -432,8 +432,9 @@
       <strong>Score error</strong> is mean absolute error on the combined run total (and on
       each side). <strong>Brier</strong> is the mean squared error of the probability (0.25 is
       a coin flip; lower is better). Opening-week games are skipped until both clubs have 10
-      completed games. Toggle pitcher / home field / recent form and run again to see whether
-      a feature earns its keep.
+      completed games. Live <a href="/">Predictions</a> uses <strong>Overdisp</strong> for
+      win %: negative binomial (size 2) on the predicted score after shrinking each side 40%
+      toward league average. Track A/Bs the wired switches (including Overdisp and Shrink OS/DS).
     </p>
   </section>
 

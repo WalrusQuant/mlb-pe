@@ -112,6 +112,123 @@ pub fn log5(p_a: f64, p_b: f64) -> f64 {
     if denom == 0.0 { 0.5 } else { num / denom }
 }
 
+/// P(home scores more than away | not tied) if each side is independent Poisson
+/// at the predicted run line. Ties (same inning-by-inning score after 9) are
+/// dropped — extra innings are treated as "play until someone leads."
+pub fn poisson_home_win(lambda_home: f64, lambda_away: f64) -> f64 {
+    const MAX_K: usize = 40;
+    score_home_win(
+        &poisson_pmf(lambda_home.max(0.0), MAX_K),
+        &poisson_pmf(lambda_away.max(0.0), MAX_K),
+    )
+}
+
+/// Same as Poisson but with extra variance: Var = μ + μ²/r.
+/// r = 2 ⇒ at μ = 4.5, Var ≈ 14.6 (~3× Poisson).
+pub const NB_SIZE: f64 = 2.0;
+/// Pull each side's predicted runs this far toward league average before
+/// converting the run line to a win %. Displayed scores are not shrunk.
+pub const RUN_LINE_SHRINK: f64 = 0.4;
+/// Pull OS and DS this far toward 1.0 before OS×DS×lg. Changes the printed score.
+pub const RATE_SHRINK: f64 = 0.4;
+
+pub fn shrink_to_one(x: f64, s: f64) -> f64 {
+    (1.0 - s) * x + s
+}
+
+/// 3-year run park factors (RotoWire 2023–2025, index/100). 1.0 = average.
+/// Tonight's OS×DS line is multiplied by this when the Park toggle is on.
+pub fn park_run_factor(venue_id: Option<i32>) -> f64 {
+    match venue_id {
+        Some(19) => 1.25,   // Coors Field
+        Some(2529) => 1.17, // Sutter Health Park
+        Some(3) => 1.10,    // Fenway Park
+        Some(15) => 1.06,   // Chase Field
+        Some(2602) => 1.06, // Great American Ball Park
+        Some(3312) => 1.06, // Target Field
+        Some(1) => 1.02,    // Angel Stadium
+        Some(4705) => 1.02, // Truist Park
+        Some(22) => 1.02,   // Dodger Stadium
+        Some(4169) => 1.02, // loanDepot park
+        Some(3309) => 1.02, // Nationals Park
+        Some(2681) => 1.02, // Citizens Bank Park
+        Some(7) => 1.02,    // Kauffman Stadium
+        Some(2394) => 1.02, // Comerica Park
+        Some(2392) => 1.00, // Daikin Park
+        Some(14) => 1.00,   // Rogers Centre
+        Some(2889) => 1.00, // Busch Stadium
+        Some(3313) => 1.00, // Yankee Stadium
+        Some(2) => 0.98,    // Camden Yards
+        Some(31) => 0.98,   // PNC Park
+        Some(4) => 0.98,    // Rate Field
+        Some(3289) => 0.96, // Citi Field
+        Some(32) => 0.94,   // American Family Field
+        Some(17) => 0.94,   // Wrigley Field
+        Some(2395) => 0.94, // Oracle Park
+        Some(5) => 0.94,    // Progressive Field
+        Some(2680) => 0.94, // Petco Park
+        Some(5325) => 0.94, // Globe Life Field
+        Some(12) => 0.92,   // Tropicana Field
+        Some(680) => 0.83,  // T-Mobile Park
+        _ => 1.0,
+    }
+}
+
+pub fn shrink_run_line(pred: f64, lg_avg: f64) -> f64 {
+    (1.0 - RUN_LINE_SHRINK) * pred + RUN_LINE_SHRINK * lg_avg
+}
+
+pub fn nb_home_win(mu_home: f64, mu_away: f64) -> f64 {
+    const MAX_K: usize = 50;
+    score_home_win(
+        &nb_pmf(mu_home.max(0.0), NB_SIZE, MAX_K),
+        &nb_pmf(mu_away.max(0.0), NB_SIZE, MAX_K),
+    )
+}
+
+fn score_home_win(ph: &[f64], pa: &[f64]) -> f64 {
+    let mut p_home = 0.0;
+    let mut p_away = 0.0;
+    for (i, &pi) in ph.iter().enumerate() {
+        for (j, &pj) in pa.iter().enumerate() {
+            let p = pi * pj;
+            if i > j {
+                p_home += p;
+            } else if j > i {
+                p_away += p;
+            }
+        }
+    }
+    let denom = p_home + p_away;
+    if denom <= 0.0 {
+        0.5
+    } else {
+        p_home / denom
+    }
+}
+
+fn poisson_pmf(lambda: f64, max_k: usize) -> Vec<f64> {
+    let mut p = vec![0.0; max_k + 1];
+    p[0] = (-lambda).exp();
+    for k in 0..max_k {
+        p[k + 1] = p[k] * lambda / (k as f64 + 1.0);
+    }
+    p
+}
+
+fn nb_pmf(mu: f64, r: f64, max_k: usize) -> Vec<f64> {
+    if r <= 0.0 {
+        return poisson_pmf(mu, max_k);
+    }
+    let mut p = vec![0.0; max_k + 1];
+    p[0] = (r / (r + mu)).powf(r);
+    let t = mu / (r + mu);
+    for k in 0..max_k {
+        p[k + 1] = p[k] * (k as f64 + r) / (k as f64 + 1.0) * t;
+    }
+    p
+}
+
 pub fn prob_to_american_odds(p: f64) -> i32 {
     if !(0.0..1.0).contains(&p) || p == 0.0 {
         return 0;
@@ -223,8 +340,13 @@ pub fn shift_log_odds(p: f64, delta: f64) -> f64 {
     // Clamp away from {0, 1} to avoid infinities. In practice log5 never returns
     // exactly 0 or 1 for any realistic input, but be defensive.
     let p = p.clamp(1e-9, 1.0 - 1e-9);
-    let lo = (p / (1.0 - p)).ln() + delta;
+    let lo = logit(p) + delta;
     1.0 / (1.0 + (-lo).exp())
+}
+
+fn logit(p: f64) -> f64 {
+    let p = p.clamp(1e-9, 1.0 - 1e-9);
+    (p / (1.0 - p)).ln()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +362,8 @@ pub struct PitcherAdj {
     /// Season IP (Era, sample gate) or expected outing IP (NextStart, bullpen share).
     pub innings_pitched: f64,
     pub source: PitcherSource,
+    /// When set, leftover innings use this rate instead of team RA/G.
+    pub bullpen_ra: Option<f64>,
 }
 
 impl PitcherAdj {
@@ -248,6 +372,7 @@ impl PitcherAdj {
             rate_or_er: era,
             innings_pitched,
             source: PitcherSource::Era,
+            bullpen_ra: None,
         }
     }
 
@@ -256,6 +381,7 @@ impl PitcherAdj {
             rate_or_er: expected_runs,
             innings_pitched: expected_innings,
             source: PitcherSource::NextStart,
+            bullpen_ra: None,
         }
     }
 
@@ -374,6 +500,76 @@ pub fn compute_recent_form(games: &[Game], window: usize) -> HashMap<i32, Recent
     out
 }
 
+/// Mean of each game's Pythagorean W%. A 22–0 is one observation (~1.000),
+/// not +22 runs in a season pile. `recent_pythag` is the same mean over the
+/// last `window` games (for the L20 blend).
+#[derive(Debug, Clone, Copy)]
+pub struct GameVote {
+    pub games: i32,
+    pub pythag: f64,
+    pub recent_games: i32,
+    pub recent_pythag: f64,
+}
+
+impl GameVote {
+    pub fn blended(self, include_recent: bool) -> f64 {
+        if include_recent && self.recent_games >= MIN_RECENT_GAMES {
+            RECENT_FORM_WEIGHT * self.recent_pythag + (1.0 - RECENT_FORM_WEIGHT) * self.pythag
+        } else {
+            self.pythag
+        }
+    }
+}
+
+pub fn compute_game_vote_pythag(
+    games: &[Game],
+    exponent: f64,
+    window: usize,
+) -> HashMap<i32, GameVote> {
+    let mut by_team: HashMap<i32, Vec<(String, f64, f64)>> = HashMap::new();
+    for g in games.iter().filter(|g| g.is_final()) {
+        let hr = g.home_runs.unwrap() as f64;
+        let ar = g.away_runs.unwrap() as f64;
+        by_team
+            .entry(g.home_team_id)
+            .or_default()
+            .push((g.date.clone(), hr, ar));
+        by_team
+            .entry(g.away_team_id)
+            .or_default()
+            .push((g.date.clone(), ar, hr));
+    }
+    let mean = |slice: &[(String, f64, f64)], exp: f64| -> f64 {
+        if slice.is_empty() {
+            return 0.5;
+        }
+        slice
+            .iter()
+            .map(|(_, rs, ra)| pythag_win_pct(*rs, *ra, exp))
+            .sum::<f64>()
+            / slice.len() as f64
+    };
+    let mut out = HashMap::new();
+    for (team_id, mut rows) in by_team {
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        if rows.is_empty() {
+            continue;
+        }
+        let take = rows.len().saturating_sub(window);
+        let recent = &rows[take..];
+        out.insert(
+            team_id,
+            GameVote {
+                games: rows.len() as i32,
+                pythag: mean(&rows, exponent),
+                recent_games: recent.len() as i32,
+                recent_pythag: mean(recent, exponent),
+            },
+        );
+    }
+    out
+}
+
 // One completed meeting between the two teams this season.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -479,6 +675,39 @@ pub fn compute_splits(games: &[Game], team_id: i32) -> TeamSplits {
     }
 }
 
+pub fn compute_all_splits(games: &[Game]) -> HashMap<i32, TeamSplits> {
+    let mut home_a: HashMap<i32, SplitAgg> = HashMap::new();
+    let mut road_a: HashMap<i32, SplitAgg> = HashMap::new();
+    for g in games.iter().filter(|g| g.is_final()) {
+        let hr = g.home_runs.unwrap();
+        let ar = g.away_runs.unwrap();
+        home_a.entry(g.home_team_id).or_default().add(hr, ar);
+        road_a.entry(g.away_team_id).or_default().add(ar, hr);
+    }
+    let mut ids: Vec<i32> = home_a.keys().copied().chain(road_a.keys().copied()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out = HashMap::new();
+    for id in ids {
+        let home = home_a.remove(&id).unwrap_or_default().finish();
+        let road = road_a.remove(&id).unwrap_or_default().finish();
+        out.insert(id, TeamSplits { home, road, l10: None });
+    }
+    out
+}
+
+pub(crate) fn stats_with_split(base: &TeamStats, line: SplitLine) -> TeamStats {
+    if line.games < MIN_RECENT_GAMES {
+        return base.clone();
+    }
+    let g = 1000i32;
+    let mut t = base.clone();
+    t.runs_scored = (line.rs_per_game * g as f64).round() as i32;
+    t.runs_allowed = (line.ra_per_game * g as f64).round() as i32;
+    t.games_played = g;
+    t
+}
+
 #[derive(Default)]
 struct SplitAgg {
     games: i32,
@@ -543,16 +772,20 @@ fn season_ra_pg(team: &TeamStats) -> f64 {
 pub fn apply_pitcher(team_ra_pg: f64, pitcher: Option<PitcherAdj>) -> f64 {
     match pitcher {
         Some(p) if p.source == PitcherSource::NextStart => {
+            let rest = p.bullpen_ra.unwrap_or(team_ra_pg);
             let bullpen_share = (1.0 - p.innings_pitched / 9.0).max(0.0);
-            p.rate_or_er + bullpen_share * team_ra_pg
+            p.rate_or_er + bullpen_share * rest
         }
         Some(p) if p.innings_pitched >= MIN_IP_FOR_ADJUSTMENT => {
-            STARTER_SHARE * p.rate_or_er + (1.0 - STARTER_SHARE) * team_ra_pg
+            let rest = p.bullpen_ra.unwrap_or(team_ra_pg);
+            STARTER_SHARE * p.rate_or_er + (1.0 - STARTER_SHARE) * rest
         }
         _ => team_ra_pg,
     }
 }
 
+/// Live Predictions path: OS/DS shrink 40% toward 1.0, then Overdisp win %
+/// (NB size 2 + 40% run-line shrink) on that score, then HFA.
 pub fn estimate_game_with_pitchers(
     home: &TeamStats,
     away: &TeamStats,
@@ -574,6 +807,12 @@ pub fn estimate_game_with_pitchers(
         away_recent,
         exponent,
         apply_home_field,
+        None,
+        None,
+        false,
+        true,
+        1.0,
+        RATE_SHRINK,
     )
     .0
 }
@@ -592,6 +831,12 @@ pub fn estimate_game_detailed(
     away_recent: Option<RecentForm>,
     exponent: f64,
     apply_home_field: bool,
+    home_game_vote: Option<f64>,
+    away_game_vote: Option<f64>,
+    use_poisson_win: bool,
+    use_nb_win: bool,
+    park_factor: f64,
+    rate_shrink: f64,
 ) -> (Prediction, MatchupBreakdown) {
     // Season-level RS/G and team RA/G. Each may be blended with the team's L20
     // form (if a RecentForm is provided AND the sample meets MIN_RECENT_GAMES).
@@ -626,25 +871,53 @@ pub fn estimate_game_detailed(
     let home_ra_eff = apply_pitcher(home_ra_team, home_pitcher);
     let away_ra_eff = apply_pitcher(away_ra_team, away_pitcher);
 
-    // Recompute team Pythagorean win % using the matchup-specific RS/RA.
-    let home_pyt = pythag_win_pct(home_rs_pg, home_ra_eff, exponent);
-    let away_pyt = pythag_win_pct(away_rs_pg, away_ra_eff, exponent);
+    // Rate Pythagorean (pooled RS/G vs effective RA). Game-vote mode replaces
+    // this with the mean of per-game Pythags, then applies the pitcher as a
+    // log-odds shift so a 22–0 is one game, not +22 runs in the pile.
+    let home_pyt_rate = pythag_win_pct(home_rs_pg, home_ra_eff, exponent);
+    let away_pyt_rate = pythag_win_pct(away_rs_pg, away_ra_eff, exponent);
+    let home_pyt = match home_game_vote {
+        Some(v) => {
+            let pre = pythag_win_pct(home_rs_pg, home_ra_team, exponent);
+            shift_log_odds(v, logit(home_pyt_rate) - logit(pre))
+        }
+        None => home_pyt_rate,
+    };
+    let away_pyt = match away_game_vote {
+        Some(v) => {
+            let pre = pythag_win_pct(away_rs_pg, away_ra_team, exponent);
+            shift_log_odds(v, logit(away_pyt_rate) - logit(pre))
+        }
+        None => away_pyt_rate,
+    };
 
     // Predicted runs: derive OS from the (possibly blended) RS/G and DS from
     // the effective RA. When no recent form / pitcher is supplied this collapses
     // back to the original season-level OS · DS · lg_avg_runs.
-    let home_os_eff = home_rs_pg / lg_avg_runs;
-    let away_os_eff = away_rs_pg / lg_avg_runs;
-    let home_ds_eff = home_ra_eff / lg_avg_runs;
-    let away_ds_eff = away_ra_eff / lg_avg_runs;
-    let home_pred = home_os_eff * away_ds_eff * lg_avg_runs;
-    let away_pred = away_os_eff * home_ds_eff * lg_avg_runs;
+    let s = rate_shrink.clamp(0.0, 1.0);
+    let home_os_eff = shrink_to_one(home_rs_pg / lg_avg_runs, s);
+    let away_os_eff = shrink_to_one(away_rs_pg / lg_avg_runs, s);
+    let home_ds_eff = shrink_to_one(home_ra_eff / lg_avg_runs, s);
+    let away_ds_eff = shrink_to_one(away_ra_eff / lg_avg_runs, s);
+    let pf = if park_factor > 0.0 { park_factor } else { 1.0 };
+    let home_pred = home_os_eff * away_ds_eff * lg_avg_runs * pf;
+    let away_pred = away_os_eff * home_ds_eff * lg_avg_runs * pf;
     let total = home_pred + away_pred;
 
     // Clamp unconditionally: log5 can return exactly 0 or 1 for degenerate
     // inputs (e.g. a team with RA=0 over a small sample), which would make
     // prob_to_american_odds hit its invalid-probability guard and return 0.
-    let neutral_home_win = log5(home_pyt, away_pyt).clamp(1e-9, 1.0 - 1e-9);
+    let neutral_home_win = if use_nb_win {
+        nb_home_win(
+            shrink_run_line(home_pred, lg_avg_runs),
+            shrink_run_line(away_pred, lg_avg_runs),
+        )
+    } else if use_poisson_win {
+        poisson_home_win(home_pred, away_pred)
+    } else {
+        log5(home_pyt, away_pyt)
+    }
+    .clamp(1e-9, 1.0 - 1e-9);
     let home_win = if apply_home_field {
         shift_log_odds(neutral_home_win, HOME_FIELD_LOG_ODDS)
     } else {
@@ -858,6 +1131,7 @@ mod tests {
             away_pitcher_id: None,
             away_pitcher_name: None,
             game_date_time: None,
+            venue_id: None,
         }
     }
 
@@ -986,7 +1260,17 @@ mod tests {
         let home_hot = Some(RecentForm { games: 20, rs_per_game: 6.0, ra_per_game: 3.0 });
         let away_cold = Some(RecentForm { games: 20, rs_per_game: 3.0, ra_per_game: 6.0 });
         let hot = estimate_game_with_pitchers(&home, &away, 4.0, None, None, home_hot, away_cold, 2.0, false);
-        assert!(hot.home_win_prob > 0.6, "expected home > 0.6, got {}", hot.home_win_prob);
+        assert!(hot.home_win_prob > 0.55, "expected home favorite after shrink, got {}", hot.home_win_prob);
+        // Live path is Overdisp, not log5 — equal run lines still 50/50; a mismatch
+        // is a favorite but not a lock.
+        let (log5_pred, _) = estimate_game_detailed(
+            &home, &away, 4.0, None, None, home_hot, away_cold, 2.0, false, None, None, false, false, 1.0, 0.0,
+        );
+        assert!(
+            (hot.home_win_prob - 0.5).abs() < (log5_pred.home_win_prob - 0.5).abs(),
+            "live Overdisp should be softer than log5: nb={} log5={}",
+            hot.home_win_prob, log5_pred.home_win_prob
+        );
     }
 
     #[test]
@@ -1009,7 +1293,7 @@ mod tests {
         let ar = Some(RecentForm { games: 20, rs_per_game: 3.9, ra_per_game: 4.6 });
 
         let (pred, bd) =
-            estimate_game_detailed(&home, &away, 4.5, hp, ap, hr, ar, 1.83, true);
+            estimate_game_detailed(&home, &away, 4.5, hp, ap, hr, ar, 1.83, true, None, None, false, false, 1.0, 0.0);
 
         assert_eq!(bd.final_home_win, pred.home_win_prob);
         assert_eq!(bd.final_away_win, pred.away_win_prob);
@@ -1106,6 +1390,19 @@ mod tests {
         assert!((apply_pitcher(4.5, short) - expected).abs() < 1e-9);
     }
 
+    #[test]
+    fn apply_pitcher_uses_bullpen_rate_for_leftover() {
+        let mut adj = PitcherAdj::from_era(3.0, 100.0);
+        adj.bullpen_ra = Some(6.0);
+        // 0.6 * 3.0 + 0.4 * 6.0 = 4.2 (not 0.4 * team 4.5)
+        assert!((apply_pitcher(4.5, Some(adj)) - 4.2).abs() < 1e-9);
+        let mut ns = PitcherAdj::from_next_start(2.3, 5.3);
+        ns.bullpen_ra = Some(6.0);
+        let expected = 2.3 + (1.0 - 5.3 / 9.0) * 6.0;
+        assert!((apply_pitcher(4.5, Some(ns)) - expected).abs() < 1e-9);
+        assert!((apply_pitcher(4.5, None) - 4.5).abs() < 1e-9);
+    }
+
     // ── Recent-form window count ────────────────────────────────────────
 
     #[test]
@@ -1123,12 +1420,97 @@ mod tests {
     // ── Numerical edge cases ────────────────────────────────────────────
 
     #[test]
+    fn game_vote_downweights_blowout() {
+        // 10 games of 5–4 plus a 22–0. Pooled Pythagorean treats +22 as a pile of
+        // runs; game-vote treats it as one ~1.000 game.
+        let mut games = Vec::new();
+        for i in 0..10 {
+            games.push(fin(i + 1, "2026-04-01", 1, "MIL", 5, 2, "OPP", 4));
+        }
+        games.push(fin(99, "2026-04-02", 1, "MIL", 22, 2, "OPP", 0));
+        let vote = compute_game_vote_pythag(&games, 2.0, 20);
+        let (stats, _) = compute_team_stats(&games, 2.0);
+        let pooled = stats.iter().find(|t| t.team_id == 1).unwrap().pythag_win_pct;
+        let v = vote.get(&1).unwrap().pythag;
+        assert!(v < pooled - 0.05, "game-vote {v} should sit well below pooled {pooled}");
+        assert!((v - 0.645).abs() < 0.01, "expected ~0.645, got {v}");
+    }
+
+    #[test]
+    fn game_vote_does_not_change_predicted_runs() {
+        let home = TeamStats {
+            team_id: 1, team: "H".into(), runs_scored: 480, runs_allowed: 400,
+            games_played: 100, pythag_win_pct: 0.6, os: 1.1, ds: 0.9,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let away = TeamStats {
+            team_id: 2, team: "A".into(), runs_scored: 420, runs_allowed: 450,
+            games_played: 100, pythag_win_pct: 0.45, os: 0.95, ds: 1.05,
+            recent_games: None, recent_rs_per_game: None, recent_ra_per_game: None,
+        };
+        let (a, _) = estimate_game_detailed(&home, &away, 4.5, None, None, None, None, 1.83, false, None, None, false, false, 1.0, 0.0);
+        let (b, _) = estimate_game_detailed(&home, &away, 4.5, None, None, None, None, 1.83, false, Some(0.55), Some(0.48), false, false, 1.0, 0.0);
+        assert!((a.home_pred_runs - b.home_pred_runs).abs() < 1e-9);
+        assert!((a.away_pred_runs - b.away_pred_runs).abs() < 1e-9);
+        assert!(a.home_win_prob != b.home_win_prob);
+    }
+
+    #[test]
     fn pythag_handles_zero_runs() {
         // RS=0, RA=0 → the 0^x/(0^x+0^x) degenerate path must not panic or NaN.
         let p = pythag_win_pct(0.0, 0.0, 1.83);
         assert!(p.is_finite(), "pythag(0,0) must be finite, got {p}");
         // RS=0, RA>0 → team never wins.
         assert!((pythag_win_pct(0.0, 700.0, 2.0) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn poisson_home_win_equal_means_is_coin_flip() {
+        let p = poisson_home_win(4.5, 4.5);
+        assert!((p - 0.5).abs() < 1e-9, "got {p}");
+    }
+
+    #[test]
+    fn poisson_home_win_favors_higher_mean() {
+        let p = poisson_home_win(6.0, 3.0);
+        assert!(p > 0.75 && p < 0.95, "6 vs 3 should be a clear but not certain favorite, got {p}");
+        assert!((poisson_home_win(3.0, 6.0) - (1.0 - p)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn nb_home_win_is_softer_than_poisson() {
+        assert!((nb_home_win(4.5, 4.5) - 0.5).abs() < 1e-9);
+        let p_nb = nb_home_win(6.0, 3.0);
+        let p_po = poisson_home_win(6.0, 3.0);
+        assert!(p_nb > 0.5, "6 vs 3 is still a favorite, got {p_nb}");
+        assert!(p_nb < p_po, "NB should be less sure than Poisson: nb={p_nb} pois={p_po}");
+    }
+
+    #[test]
+    fn park_run_factor_known_venues() {
+        assert!((park_run_factor(Some(19)) - 1.25).abs() < 1e-9); // Coors
+        assert!((park_run_factor(Some(680)) - 0.83).abs() < 1e-9); // T-Mobile
+        assert!((park_run_factor(None) - 1.0).abs() < 1e-9);
+        assert!((park_run_factor(Some(99999)) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shrink_to_one_is_convex() {
+        assert!((shrink_to_one(1.333, 0.4) - 1.2).abs() < 0.001);
+        assert!((shrink_to_one(1.0, 0.4) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shrink_run_line_moves_toward_league_avg() {
+        assert!((shrink_run_line(6.0, 4.5) - 5.4).abs() < 1e-9);
+        assert!((shrink_run_line(3.0, 4.5) - 3.6).abs() < 1e-9);
+        let raw = nb_home_win(6.0, 3.0);
+        let shrunk = nb_home_win(shrink_run_line(6.0, 4.5), shrink_run_line(3.0, 4.5));
+        assert!(shrunk > 0.5);
+        assert!(
+            (shrunk - 0.5).abs() < (raw - 0.5).abs(),
+            "shrunk line should be closer to 50%: raw={raw} shrunk={shrunk}"
+        );
     }
 
     #[test]
@@ -1185,7 +1567,7 @@ mod tests {
         // If the pitcher wrongly operated on season RA, we'd get 0.6*2.0+0.4*4.0 = 2.8.
         let hr = Some(RecentForm { games: 20, rs_per_game: 5.0, ra_per_game: 3.0 });
         let hp = Some(PitcherAdj::from_era(2.0, 100.0));
-        let (_, bd) = estimate_game_detailed(&home, &away, 4.5, hp, None, hr, None, 1.83, false);
+        let (_, bd) = estimate_game_detailed(&home, &away, 4.5, hp, None, hr, None, 1.83, false, None, None, false, false, 1.0, 0.0);
         assert!((bd.home.effective_ra_per_game - 2.64).abs() < 1e-6,
             "expected 2.64 (pitcher on blended RA), got {}", bd.home.effective_ra_per_game);
     }

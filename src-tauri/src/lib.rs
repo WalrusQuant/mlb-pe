@@ -22,7 +22,8 @@ use model::{
     compute_head_to_head, compute_recent_form, compute_splits, compute_team_stats,
     estimate_game_detailed, estimate_game_with_pitchers, optimize_exponent, round_to, GameRow,
     HeadToHead, MatchupBreakdown, NextStartCard, PitcherAdj, PitcherInfo, Prediction, RecentForm,
-    RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RECENT_FORM_WINDOW,
+    RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RATE_SHRINK,
+    RECENT_FORM_WINDOW,
 };
 use division_race::{build_division_race, WlOverride, DEFAULT_N_SIMS, DEFAULT_SEED};
 use backtest::{run_backtest, BacktestBundle, StarterLog};
@@ -47,7 +48,7 @@ struct Cache {
     bullpens: HashMap<(i32, i32), (Bullpen, Instant)>,
     next_starts: HashMap<String, (HashMap<i32, NextStartCard>, Instant)>,
     starter_logs: Option<(i32, Vec<StarterLog>, Instant)>,
-    backtests: HashMap<(i32, bool, bool, bool), BacktestBundle>,
+    backtests: HashMap<(i32, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool), BacktestBundle>,
 }
 
 impl AppState {
@@ -77,7 +78,7 @@ impl AppState {
         let mut cache = self.cache.lock().unwrap();
         cache.schedule = Some((season, games.clone(), Instant::now()));
         cache.optimal_exp.remove(&season);
-        cache.backtests.retain(|(s, _, _, _), _| *s != season);
+        cache.backtests.retain(|(s, _, _, _, _, _, _, _, _, _, _), _| *s != season);
         Ok(games)
     }
 
@@ -607,6 +608,12 @@ async fn get_game_breakdown(
         away_recent_adj,
         exp,
         include_home_field,
+        None,
+        None,
+        false,
+        true,
+        1.0,
+        RATE_SHRINK,
     );
 
     Ok(GameBreakdownBundle {
@@ -924,12 +931,38 @@ async fn run_backtest_cmd(
     include_pitchers: Option<bool>,
     include_home_field: Option<bool>,
     include_recent_form: Option<bool>,
+    include_game_vote: Option<bool>,
+    include_poisson_win: Option<bool>,
+    include_nb_win: Option<bool>,
+    include_park_factors: Option<bool>,
+    include_rate_shrink: Option<bool>,
+    include_splits: Option<bool>,
+    include_bullpen: Option<bool>,
 ) -> Result<BacktestBundle, String> {
     let season = season.unwrap_or_else(default_season);
     let include_pitchers = include_pitchers.unwrap_or(false);
     let include_home_field = include_home_field.unwrap_or(true);
     let include_recent_form = include_recent_form.unwrap_or(true);
-    let key = (season, include_pitchers, include_home_field, include_recent_form);
+    let include_game_vote = include_game_vote.unwrap_or(false);
+    let include_poisson_win = include_poisson_win.unwrap_or(false);
+    let include_nb_win = include_nb_win.unwrap_or(false);
+    let include_park_factors = include_park_factors.unwrap_or(false);
+    let include_rate_shrink = include_rate_shrink.unwrap_or(false);
+    let include_splits = include_splits.unwrap_or(false);
+    let include_bullpen = include_bullpen.unwrap_or(false);
+    let key = (
+        season,
+        include_pitchers,
+        include_home_field,
+        include_recent_form,
+        include_game_vote,
+        include_poisson_win,
+        include_nb_win,
+        include_park_factors,
+        include_rate_shrink,
+        include_splits,
+        include_bullpen,
+    );
     {
         let cache = state.cache.lock().unwrap();
         if let Some(b) = cache.backtests.get(&key) {
@@ -937,7 +970,7 @@ async fn run_backtest_cmd(
         }
     }
     let games = state.get_games(season, false).await?;
-    let logs = if include_pitchers {
+    let logs = if include_pitchers || include_bullpen {
         state.get_starter_logs(season).await?
     } else {
         Vec::new()
@@ -950,6 +983,13 @@ async fn run_backtest_cmd(
             include_pitchers,
             include_home_field,
             include_recent_form,
+            include_game_vote,
+            include_poisson_win,
+            include_nb_win,
+            include_park_factors,
+            include_rate_shrink,
+            include_splits,
+            include_bullpen,
         )
     })
     .await

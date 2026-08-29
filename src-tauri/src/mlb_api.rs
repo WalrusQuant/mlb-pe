@@ -32,6 +32,7 @@ pub struct Game {
     pub home_pitcher_name: Option<String>,
     pub away_pitcher_id: Option<i32>,
     pub away_pitcher_name: Option<String>,
+    pub venue_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -345,6 +346,7 @@ fn normalize(resp: ApiScheduleResponse) -> Vec<Game> {
                 home_pitcher_name: home_pname,
                 away_pitcher_id: away_pid,
                 away_pitcher_name: away_pname,
+                venue_id: g.venue.map(|v| v.id),
             });
         }
     }
@@ -395,6 +397,7 @@ struct ApiGame {
     teams: ApiTeams,
     #[serde(rename = "seriesDescription")]
     series_description: Option<String>,
+    venue: Option<ApiIdRef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -759,6 +762,7 @@ mod tests {
             home_pitcher_name: None,
             away_pitcher_id: None,
             away_pitcher_name: None,
+            venue_id: None,
         };
         let mut b = a.clone();
         b.game_date_time = Some("resume".into());
