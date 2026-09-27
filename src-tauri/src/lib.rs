@@ -1,10 +1,11 @@
 // Tauri entrypoint + command registry.
 // Math + API live in model.rs and mlb_api.rs.
 
+pub mod backtest;
+pub mod division_race;
+pub mod futures;
 pub mod mlb_api;
 pub mod model;
-pub mod division_race;
-pub mod backtest;
 pub mod odds;
 
 use std::collections::HashMap;
@@ -15,6 +16,8 @@ use chrono::Utc;
 use serde::Serialize;
 use tauri::State;
 
+use backtest::{run_backtest, BacktestBundle, StarterLog};
+use futures::{build_futures, FuturesBundle, WlOverride, DEFAULT_N_SIMS, DEFAULT_SEED};
 use mlb_api::{
     fetch_boxscore, fetch_bullpen, fetch_pitcher_stats, fetch_schedule, fetch_standings, Bullpen,
     Game, Lineups, PitcherStats, TeamStanding,
@@ -26,8 +29,6 @@ use model::{
     RecentInfo, TeamSplits, TeamStats, MIN_IP_FOR_ADJUSTMENT, MIN_RECENT_GAMES, RATE_SHRINK,
     RECENT_FORM_WINDOW,
 };
-use division_race::{build_division_race, WlOverride, DEFAULT_N_SIMS, DEFAULT_SEED};
-use backtest::{run_backtest, BacktestBundle, StarterLog};
 
 const CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 const PITCHER_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour — ERA changes slowly
@@ -49,8 +50,34 @@ struct Cache {
     bullpens: HashMap<(i32, i32), (Bullpen, Instant)>,
     next_starts: HashMap<String, (HashMap<i32, NextStartCard>, Instant)>,
     starter_logs: Option<(i32, Vec<StarterLog>, Instant)>,
-    backtests: HashMap<(i32, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool), BacktestBundle>,
+    backtests: HashMap<
+        (
+            i32,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+        ),
+        BacktestBundle,
+    >,
     sao: HashMap<String, Vec<odds::ClosingLine>>,
+    futures: HashMap<FuturesKey, (FuturesBundle, Instant)>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FuturesKey {
+    season: i32,
+    include_home_field: bool,
+    include_recent_form: bool,
+    n_sims: u32,
+    seed: u64,
+    overrides: Vec<(i32, i32, i32)>,
 }
 
 impl AppState {
@@ -80,7 +107,10 @@ impl AppState {
         let mut cache = self.cache.lock().unwrap();
         cache.schedule = Some((season, games.clone(), Instant::now()));
         cache.optimal_exp.remove(&season);
-        cache.backtests.retain(|(s, _, _, _, _, _, _, _, _, _, _), _| *s != season);
+        cache
+            .backtests
+            .retain(|(s, _, _, _, _, _, _, _, _, _, _), _| *s != season);
+        cache.futures.retain(|k, _| k.season != season);
         Ok(games)
     }
 
@@ -152,39 +182,39 @@ impl AppState {
             }
         }
         let date_owned = date.to_string();
-        let scored = tokio::task::spawn_blocking(move || match pns_core::score_date_detailed(&date_owned)
-        {
-            Ok(slate) => slate
-                .cards
-                .into_iter()
-                .map(|c| {
-                    (
-                        c.pitcher_id as i32,
-                        NextStartCard {
-                            projected_fip: c.projected_fip,
-                            expected_runs: c.expected_runs_base,
-                            expected_runs_low: c.expected_runs_low,
-                            expected_runs_high: c.expected_runs_high,
-                            expected_innings: c.expected_innings,
-                            confidence: match c.confidence {
-                                pns_core::Confidence::High => "high".into(),
-                                pns_core::Confidence::Medium => "medium".into(),
-                                pns_core::Confidence::Low => "low".into(),
+        let scored =
+            tokio::task::spawn_blocking(move || match pns_core::score_date_detailed(&date_owned) {
+                Ok(slate) => slate
+                    .cards
+                    .into_iter()
+                    .map(|c| {
+                        (
+                            c.pitcher_id as i32,
+                            NextStartCard {
+                                projected_fip: c.projected_fip,
+                                expected_runs: c.expected_runs_base,
+                                expected_runs_low: c.expected_runs_low,
+                                expected_runs_high: c.expected_runs_high,
+                                expected_innings: c.expected_innings,
+                                confidence: match c.confidence {
+                                    pns_core::Confidence::High => "high".into(),
+                                    pns_core::Confidence::Medium => "medium".into(),
+                                    pns_core::Confidence::Low => "low".into(),
+                                },
                             },
-                        },
-                    )
-                })
-                .collect::<HashMap<i32, NextStartCard>>(),
-            Err(e) => {
-                eprintln!("[mlb-pe] next-start score failed for {date_owned}: {e}");
+                        )
+                    })
+                    .collect::<HashMap<i32, NextStartCard>>(),
+                Err(e) => {
+                    eprintln!("[mlb-pe] next-start score failed for {date_owned}: {e}");
+                    HashMap::new()
+                }
+            })
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("[mlb-pe] next-start worker panicked: {e}");
                 HashMap::new()
-            }
-        })
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("[mlb-pe] next-start worker panicked: {e}");
-            HashMap::new()
-        });
+            });
         let mut cache = self.cache.lock().unwrap();
         cache
             .next_starts
@@ -211,6 +241,7 @@ impl AppState {
         let st = fetch_standings(season).await.map_err(|e| e.to_string())?;
         let mut cache = self.cache.lock().unwrap();
         cache.standings = Some((season, st.clone(), Instant::now()));
+        cache.futures.retain(|k, _| k.season != season);
         Ok(st)
     }
 
@@ -225,7 +256,9 @@ impl AppState {
         }
         let lu = fetch_boxscore(game_pk).await.map_err(|e| e.to_string())?;
         let mut cache = self.cache.lock().unwrap();
-        cache.boxscores.insert(game_pk, (lu.clone(), Instant::now()));
+        cache
+            .boxscores
+            .insert(game_pk, (lu.clone(), Instant::now()));
         Ok(lu)
     }
 
@@ -238,11 +271,15 @@ impl AppState {
                 }
             }
         }
-        let bp = fetch_bullpen(season, team_id).await.map_err(|e| e.to_string())?;
+        let bp = fetch_bullpen(season, team_id)
+            .await
+            .map_err(|e| e.to_string())?;
         // Only cache a real hit — leave None uncached so it retries when the split appears.
         if let Some(bp) = bp {
             let mut cache = self.cache.lock().unwrap();
-            cache.bullpens.insert((season, team_id), (bp, Instant::now()));
+            cache
+                .bullpens
+                .insert((season, team_id), (bp, Instant::now()));
         }
         Ok(bp)
     }
@@ -311,8 +348,8 @@ impl AppState {
 
 fn fetch_starter_logs(season: i32) -> Result<Vec<StarterLog>, String> {
     let client = pns_core::data::MlbStatsClient::new().map_err(|e| e.to_string())?;
-    let rows = pns_core::data::dataset::build_seasons(&client, &[season], 1)
-        .map_err(|e| e.to_string())?;
+    let rows =
+        pns_core::data::dataset::build_seasons(&client, &[season], 1).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|r| StarterLog {
@@ -361,8 +398,7 @@ async fn get_predictions(
     };
 
     let (team_stats, lg_avg_runs) = compute_team_stats(&games, exp);
-    let team_by_id: HashMap<i32, &TeamStats> =
-        team_stats.iter().map(|t| (t.team_id, t)).collect();
+    let team_by_id: HashMap<i32, &TeamStats> = team_stats.iter().map(|t| (t.team_id, t)).collect();
 
     // Always compute recent-form so we can DISPLAY the L20 line on every card.
     // The include_recent_form toggle gates whether it enters the model math.
@@ -471,7 +507,12 @@ async fn get_predictions(
     // BTreeSet iterates in sorted order, so the resulting Vec is already sorted.
     let available_dates: Vec<String> = games
         .iter()
-        .filter(|g| matches!(g.status, mlb_api::GameStatus::Preview | mlb_api::GameStatus::Live))
+        .filter(|g| {
+            matches!(
+                g.status,
+                mlb_api::GameStatus::Preview | mlb_api::GameStatus::Live
+            )
+        })
         .map(|g| g.date.clone())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -526,7 +567,10 @@ async fn get_optimal_exponent(
 ) -> Result<f64, String> {
     let season = season.unwrap_or_else(default_season);
     let games = state.get_games(season, false).await?;
-    Ok(round_to(state.get_or_compute_optimal_exp(season, &games), 4))
+    Ok(round_to(
+        state.get_or_compute_optimal_exp(season, &games),
+        4,
+    ))
 }
 
 #[tauri::command]
@@ -607,8 +651,7 @@ async fn get_game_breakdown(
     };
 
     let (team_stats, lg_avg_runs) = compute_team_stats(&games, exp);
-    let team_by_id: HashMap<i32, &TeamStats> =
-        team_stats.iter().map(|t| (t.team_id, t)).collect();
+    let team_by_id: HashMap<i32, &TeamStats> = team_stats.iter().map(|t| (t.team_id, t)).collect();
     let recent_by_id = compute_recent_form(&games, RECENT_FORM_WINDOW);
 
     let home = team_by_id
@@ -824,41 +867,104 @@ fn last_five(games: &[Game], team_id: i32, before_pk: i64) -> Vec<RecentResult> 
         .collect()
 }
 
+fn futures_key(
+    season: i32,
+    include_home_field: bool,
+    include_recent_form: bool,
+    n_sims: u32,
+    seed: u64,
+    overrides: &[WlOverride],
+) -> FuturesKey {
+    let mut ov: Vec<(i32, i32, i32)> = overrides
+        .iter()
+        .map(|o| (o.team_id, o.wins.max(0), o.losses.max(0)))
+        .collect();
+    ov.sort_unstable();
+    FuturesKey {
+        season,
+        include_home_field,
+        include_recent_form,
+        n_sims,
+        seed,
+        overrides: ov,
+    }
+}
+
 #[tauri::command]
-async fn get_division_race(
+async fn get_futures(
     state: State<'_, AppState>,
     season: Option<i32>,
-    division_id: Option<i32>,
     include_home_field: Option<bool>,
     include_recent_form: Option<bool>,
     n_sims: Option<u32>,
     seed: Option<u64>,
     wl_overrides: Option<Vec<WlOverride>>,
-) -> Result<division_race::DivisionRaceBundle, String> {
+) -> Result<FuturesBundle, String> {
     let season = season.unwrap_or_else(default_season);
-    let division_id = division_id.unwrap_or(201); // AL East — first in the standings grid
     let include_home_field = include_home_field.unwrap_or(true);
     let include_recent_form = include_recent_form.unwrap_or(true);
     let n_sims = n_sims.unwrap_or(DEFAULT_N_SIMS);
     let seed = seed.unwrap_or(DEFAULT_SEED);
     let overrides = wl_overrides.unwrap_or_default();
-
-    let games = state.get_games(season, false).await?;
-    let standings = state.get_standings(season, false).await?;
-    let exp = state.get_or_compute_optimal_exp(season, &games);
-
-    build_division_race(
+    let key = futures_key(
         season,
-        &games,
-        &standings,
-        division_id,
-        exp,
         include_home_field,
         include_recent_form,
         n_sims,
         seed,
         &overrides,
-    )
+    );
+
+    {
+        let cache = state.cache.lock().unwrap();
+        if let Some((bundle, stored)) = cache.futures.get(&key) {
+            if stored.elapsed() < CACHE_TTL {
+                return Ok(bundle.clone());
+            }
+        }
+    }
+
+    let games = state.get_games(season, false).await?;
+    let standings = state.get_standings(season, false).await?;
+    let exp = state.get_or_compute_optimal_exp(season, &games);
+    // A refetch of either cache drops futures entries, so re-check before the sim.
+    {
+        let cache = state.cache.lock().unwrap();
+        if let Some((bundle, stored)) = cache.futures.get(&key) {
+            if stored.elapsed() < CACHE_TTL {
+                return Ok(bundle.clone());
+            }
+        }
+    }
+
+    let games_owned = games.clone();
+    let standings_owned = standings.clone();
+    let overrides_owned = overrides.clone();
+    let bundle = tokio::task::spawn_blocking(move || {
+        build_futures(
+            season,
+            &games_owned,
+            &standings_owned,
+            exp,
+            include_home_field,
+            include_recent_form,
+            n_sims,
+            seed,
+            &overrides_owned,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let mut cache = state.cache.lock().unwrap();
+    cache
+        .futures
+        .retain(|_, (_, stored)| stored.elapsed() < CACHE_TTL);
+    if cache.futures.len() >= 6 {
+        cache.futures.clear();
+    }
+    cache.futures.insert(key, (bundle.clone(), Instant::now()));
+    Ok(bundle)
 }
 
 fn default_season() -> i32 {
@@ -893,7 +999,10 @@ fn matchup_inputs(
         }
         let id = id?;
         if let Some(ns) = next_starts.get(&id) {
-            return Some(PitcherAdj::from_next_start(ns.expected_runs, ns.expected_innings));
+            return Some(PitcherAdj::from_next_start(
+                ns.expected_runs,
+                ns.expected_innings,
+            ));
         }
         pitchers
             .get(&id)
@@ -1072,7 +1181,7 @@ pub fn run() {
             get_optimal_exponent,
             refresh_schedule,
             get_standings,
-            get_division_race,
+            get_futures,
             run_backtest_cmd,
         ])
         .run(tauri::generate_context!())

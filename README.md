@@ -58,14 +58,15 @@ src-tauri/src/
 ├── mlb_api.rs         # statsapi.mlb.com client (schedule + people + standings endpoints)
 ├── model.rs           # Pythagorean, log5, OS/DS, recent-form blend, pitcher blend,
 │                      # home-field shift, golden-section exponent fitter
-├── division_race.rs   # magic number, rest-of-season Log5 walk, Monte Carlo P(win division)
+├── division_race.rs   # magic number, rest-of-season expected wins
+├── futures.rs         # full-slate Monte Carlo, 12-team bracket, pennant + World Series
 └── lib.rs             # Tauri commands + in-memory caches
 
 src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (cards)
 │   ├── standings/+page.svelte      # Division standings + wild-card race
-│   ├── race/+page.svelte           # Division race: magic number, ROS Log5 walk, Monte Carlo
+│   ├── race/+page.svelte           # Futures: division, wild card, playoffs, pennant, World Series
 │   ├── stats/+page.svelte          # Luck / OS+DS / hot+cold leaderboards
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
 │   └── playground/+page.svelte     # Team table + matchup editor
@@ -93,7 +94,7 @@ cargo test --lib                        # unit tests (pythag, log5, odds, inning
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for the broader feature list. Done so far: **pitcher adjustment**, **standings**, **home-field advantage**, **recent-form weighting**, **division race**. Up next: live scoreboard, model performance tracker, park factors, and more.
+See [ROADMAP.md](./ROADMAP.md) for the broader feature list. Done so far: **pitcher adjustment**, **standings**, **home-field advantage**, **recent-form weighting**, **division race**, **futures** (playoffs, pennant, World Series). Up next: live scoreboard, park factors, and more.
 
 ## Acknowledgments
 

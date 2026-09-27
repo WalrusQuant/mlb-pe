@@ -13,7 +13,8 @@
     { id: "homefield", label: "9 · Home-field advantage" },
     { id: "recent", label: "10 · Recent form weighting" },
     { id: "race", label: "11 · Magic number & ROS walk" },
-    { id: "track", label: "12 · Track record" },
+    { id: "futures", label: "12 · Futures" },
+    { id: "track", label: "13 · Track record" },
   ];
 </script>
 
@@ -244,8 +245,8 @@
     </p>
 
     <p class="subtle">
-      <strong>Limits:</strong> the Division Race still walks remaining games with pitcher
-      blend off — most of those starters aren't announced. Confidence is a reliability tier,
+      <strong>Limits:</strong> Futures still walks remaining games, and the postseason,
+      with the pitcher blend off — most of those starters aren't announced. Confidence is a reliability tier,
       not “is he good”; the current artifact withholds High. Park in the projection is a
       home/away runs-per-game proxy, not a full park-factor model.
     </p>
@@ -367,7 +368,7 @@
   <section id="race">
     <h2>11 · Magic number and the rest-of-season walk</h2>
     <p>
-      The <a href="/race">Division Race</a> tab splits “who wins this division?” into
+      The <a href="/race">Futures</a> tab splits “who wins this division?” into
       <em>need</em> and <em>supply</em>. Need is the magic number. Supply is what the remaining
       schedule is expected to produce, given each team's Pythagorean talent.
     </p>
@@ -388,16 +389,17 @@
       If the season series between the two teams is already complete and you lead it, the
       <span class="mono">+1</span> drops: a tie at the end of the year would go to you on the
       first MLB tiebreaker, so you only need to not finish behind them. If they still play
-      each other, we keep the standard formula — the series isn't decided yet. Later
-      tiebreakers (intradivision record, and so on) are not applied.
+      each other, we keep the standard formula — the series isn't decided yet. The magic
+      number stops there. The simulation in the next section applies intradivision and
+      intraleague record.
     </p>
 
     <p>
       Supply is a walk of every remaining game, including out-of-division and interleague
       opponents. Talent is the same Pythagorean W% from RS/RA (and the same fitted exponent)
       used everywhere else in the app. The pitcher blend is off — most remaining starters
-      aren't announced. Home-field and recent-form follow the toggles on the Race page.
-      Each remaining game's win probability is log5 over those two Pythagorean strengths
+      aren't announced. Home-field and recent-form follow the toggles on the Futures page.
+      Each remaining game's win probability is the same model as Predictions, pitchers off
       (plus the home-field shift when that toggle is on).
     </p>
 
@@ -411,16 +413,51 @@
     </p>
 
     <p>
-      The second layer is a Monte Carlo. Each remaining game is drawn as a Bernoulli from
-      its log5 <em>p</em>, thousands of full season paths. A path counts as a division win
-      only if that team uniquely finishes first, or (on a wins tie) uniquely leads the
-      season series among the tied group. A simulated tie that head-to-head cannot break
-      is not a unique division win — that's why the P(win) column may not sum to 100%.
+      The probabilities are not a separate model. They come from the one season simulation
+      in the next section, which always awards the division.
+    </p>
+  </section>
+
+  <section id="futures">
+    <h2>12 · Division, pennant, World Series</h2>
+    <p>
+      Wild-card odds, a pennant, and a World Series title depend on the other 29 clubs
+      and on the bracket. The Futures table runs one Monte Carlo of every remaining
+      regular-season game, then plays October.
+    </p>
+    <p>
+      Each remaining game is priced once, with the same win model as
+      <a href="/">Predictions</a> and with pitchers forced off. Talent stays frozen at
+      today — simulated wins do not rewrite RS/RA or the L20 line. Home-field and
+      recent-form follow the toggles, including inside the postseason: the designated
+      home team of that game gets the log-odds shift when Home Field is on.
+    </p>
+    <p>
+      The bracket is the current 12-team format. Three division winners are seeded 1–3
+      by record, even if a wild-card team has more wins. The three wild cards are seeds
+      4–6. Seeds 1 and 2 skip the first round. The wild-card round is a best of three,
+      all games at the higher seed (3 vs 6, 4 vs 5). The division series is a best of
+      five, 2-2-1, and it does not reseed: 1 plays the winner of 4/5, and 2 plays the
+      winner of 3/6. The league championship and the World Series are best of seven,
+      2-3-2. World Series home field goes to the pennant winner with the better
+      regular-season winning percentage.
+    </p>
+    <p>
+      Ties for a spot use head-to-head among the tied clubs, then intradivision record
+      when they share a division, then intraleague record. Anything still tied is a
+      seeded coin flip. Every spot is awarded, so each league's division column sums to
+      300%, each league's pennant column sums to 100%, and the World Series column sums
+      to 100% across both leagues. Playoffs = division + wild card for every team.
+    </p>
+    <p class="subtle">
+      Not in this pass: wild-card magic numbers, the “last half of intraleague games”
+      tiebreaker, bullpen or rotation quality in October, and a comparison against a
+      sportsbook futures price.
     </p>
   </section>
 
   <section id="track">
-    <h2>12 · Track record</h2>
+    <h2>13 · Track record</h2>
     <p>
       The <a href="/track">Track</a> tab pulls every finished game this season from the MLB
       schedule and re-runs the model, then compares the pick and predicted score to the box
@@ -440,7 +477,7 @@
 
   <section class="next">
     <p>
-      Want to feel how the math behaves? Head to the <a href="/playground">Playground</a> — drag the exponent, edit the teams, watch the win % move. Or open the <a href="/race">Division Race</a> tab and walk a remaining schedule.
+      Want to feel how the math behaves? Head to the <a href="/playground">Playground</a> — drag the exponent, edit the teams, watch the win % move. Or open <a href="/race">Futures</a> and walk a remaining schedule.
     </p>
   </section>
   </article>
