@@ -15,8 +15,6 @@ src-tauri/src/
 ├── mlb_api.rs     # HTTP client for /schedule, /people, /standings endpoints
 ├── model.rs       # Pythagorean, log5, OS/DS, pitcher blend, home-field shift,
 │                  # exponent fitter
-├── division_race.rs # magic number, rest-of-season expected wins
-├── futures.rs     # full-slate Monte Carlo, 12-team bracket, pennant + World Series
 ├── backtest.rs    # replay finished games vs box scores
 └── lib.rs         # Tauri commands + AppState cache (schedule + pitchers + standings)
 
@@ -26,7 +24,6 @@ src/
 ├── routes/
 │   ├── +page.svelte                # Predictions (time-sorted slate table)
 │   ├── standings/+page.svelte      # Division standings + wild-card race
-│   ├── race/+page.svelte           # Futures: division, wild card, playoffs, pennant, WS
 │   ├── stats/+page.svelte          # Model-flavored leaderboards (luck, OS/DS, hot/cold)
 │   ├── track/+page.svelte          # Historical replay vs outcomes
 │   ├── learn/+page.svelte          # Educational walkthrough w/ left TOC
@@ -62,8 +59,6 @@ For each matchup:
 Constants live in `model.rs`: `STARTER_SHARE = 0.6`, `MIN_IP_FOR_ADJUSTMENT = 20.0`, `HOME_FIELD_LOG_ODDS = 0.1603`, `RECENT_FORM_WINDOW = 20`, `RECENT_FORM_WEIGHT = 0.4`, `MIN_RECENT_GAMES = 10`, `NB_SIZE = 2.0`, `RUN_LINE_SHRINK = 0.4`, `RATE_SHRINK = 0.4`.
 
 All three toggles live on the Predictions page (apply server-side via `get_predictions` params `includePitchers` / `includeHomeField` / `includeRecentForm`) AND on the Playground page (apply client-side via mirrored JS math — keep the Rust and JS implementations in sync).
-
-Futures (`get_futures`) reuses `estimate_game_with_pitchers` with pitchers forced off, then Monte Carlos the whole remaining schedule and the 12-team bracket. One sim feeds P(division), P(wild card), P(playoffs), P(pennant), and P(World Series). Ties are always awarded (head-to-head, then intradivision, then intraleague, then a seeded coin flip), so those columns sum to 1. The Playground does not mirror this — it is not a per-game formula.
 
 ## Conventions
 
@@ -102,7 +97,6 @@ cargo check                     # quick backend type-check
 cargo test --lib                # backend unit tests
 cargo run --example smoke       # end-to-end: hits live MLB API, prints prediction table
 cargo run --example smoke 2026 2026-05-23   # specific season + date
-cargo run --example futures                 # live 30-team futures table (optional sim count)
 ```
 
 The smoke test is the fastest way to validate backend changes against real data without spinning up the GUI.

@@ -272,11 +272,9 @@ export type WlOverride = {
   losses: number;
 };
 
-export type FuturesRow = {
+export type DivisionRaceRow = {
   teamId: number;
   teamName: string;
-  leagueId: number;
-  divisionId: number;
   wins: number;
   losses: number;
   runsScored: number;
@@ -292,15 +290,13 @@ export type FuturesRow = {
   projectedWins: number;
   projectedLosses: number;
   pWinDivision: number;
-  pWildCard: number;
-  pPlayoffs: number;
-  pPennant: number;
-  pWinWorldSeries: number;
   remaining: RemainingGame[];
 };
 
-export type FuturesBundle = {
+export type DivisionRaceBundle = {
   season: number;
+  divisionId: number;
+  divisionName: string;
   lastUpdated: string;
   exponent: number;
   seasonGames: number;
@@ -308,8 +304,9 @@ export type FuturesBundle = {
   seed: number;
   includeHomeField: boolean;
   includeRecentForm: boolean;
+  pTie: number;
   tiebreakerNote: string;
-  teams: FuturesRow[];
+  teams: DivisionRaceRow[];
 };
 
 export type BacktestGame = {

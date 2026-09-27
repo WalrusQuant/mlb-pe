@@ -1,6 +1,6 @@
 [package]
 name = "mlbpe"
-version = "0.2.0"
+version = "0.1.0"
 description = "MLB Pythagorean Expectation — predict & learn"
 authors = ["Adam Wickwire"]
 edition = "2021"
