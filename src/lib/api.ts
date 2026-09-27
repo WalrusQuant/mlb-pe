@@ -5,7 +5,7 @@ import type {
   TeamStatsBundle,
   GameBreakdownBundle,
   GameContextBundle,
-  DivisionRaceBundle,
+  FuturesBundle,
   WlOverride,
   BacktestBundle,
 } from "./types";
@@ -58,16 +58,15 @@ export async function getStandings(season?: number): Promise<StandingsBundle> {
   return await invoke<StandingsBundle>("get_standings", { season });
 }
 
-export async function getDivisionRace(opts: {
+export async function getFutures(opts: {
   season?: number;
-  divisionId?: number;
   includeHomeField?: boolean;
   includeRecentForm?: boolean;
   nSims?: number;
   seed?: number;
   wlOverrides?: WlOverride[];
-} = {}): Promise<DivisionRaceBundle> {
-  return await invoke<DivisionRaceBundle>("get_division_race", opts);
+} = {}): Promise<FuturesBundle> {
+  return await invoke<FuturesBundle>("get_futures", opts);
 }
 
 export async function runBacktest(opts: {
